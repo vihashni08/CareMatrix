@@ -1,0 +1,4 @@
+vitaldb
+pandas
+numpy
+matplotlib
