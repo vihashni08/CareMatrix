@@ -3,14 +3,11 @@
 import numpy as np
 import pandas as pd
 
+try:
+    from .config import DEVIATION_THRESHOLDS, PERSISTENCE_SECONDS
+except ImportError:  # pragma: no cover - supports direct module execution
+    from config import DEVIATION_THRESHOLDS, PERSISTENCE_SECONDS
 
-# Engineering settings for this research prototype, not medical thresholds.
-DEVIATION_THRESHOLDS = {
-    "HR": 0.20,
-    "MAP": 0.20,
-    "SpO2": 0.05,
-    "RR": 0.25,
-}
 
 
 def calculate_deviation(df: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFrame:
@@ -33,7 +30,7 @@ def calculate_deviation(df: pd.DataFrame, baseline: pd.DataFrame) -> pd.DataFram
     return deviation.replace([np.inf, -np.inf], np.nan)
 
 
-def apply_persistence(alert_series: pd.Series, duration: int = 10) -> pd.Series:
+def apply_persistence(alert_series: pd.Series, duration: int = PERSISTENCE_SECONDS) -> pd.Series:
     """Mark samples where a candidate alert has lasted ``duration`` samples.
 
     With one-second VitalDB samples, the default duration represents ten

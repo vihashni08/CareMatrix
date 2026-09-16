@@ -15,12 +15,25 @@ try:  # Supports both package imports and direct script execution.
         apply_persistence,
         calculate_deviation,
     )
+    from .alert_state import PhysiologicalEventTracker, manage_alert_lifecycle
+    from .config import (
+        BASELINE_WINDOW_SECONDS,
+        MIN_DEVIATING_VITALS,
+        PERSISTENCE_SECONDS,
+        RECOVERY_DURATION_SECONDS,
+    )
     from .preprocessing import preprocess_data
+    from .signal_quality import assess_signal_quality, invalid_measurement_mask
+    from .trend_detector import calculate_trends
 except ImportError:  # pragma: no cover - convenience for direct execution
     from alert import create_alert
     from baseline import calculate_baseline
     from deviation_detector import DEVIATION_THRESHOLDS, apply_persistence, calculate_deviation
+    from alert_state import PhysiologicalEventTracker, manage_alert_lifecycle
+    from config import BASELINE_WINDOW_SECONDS, MIN_DEVIATING_VITALS, PERSISTENCE_SECONDS, RECOVERY_DURATION_SECONDS
     from preprocessing import preprocess_data
+    from signal_quality import assess_signal_quality, invalid_measurement_mask
+    from trend_detector import calculate_trends
 
 
 TRACK_MAPPING = {
@@ -86,8 +99,8 @@ def load_case_data(case_id: int) -> pd.DataFrame:
 def monitor_dataframe(
     case_id: int,
     df: pd.DataFrame,
-    baseline_window: int = 60,
-    persistence_duration: int = 10,
+    baseline_window: int = BASELINE_WINDOW_SECONDS,
+    persistence_duration: int = PERSISTENCE_SECONDS,
 ) -> dict[str, Any]:
     """Run the full monitoring pipeline on a prepared patient dataframe.
 
@@ -104,9 +117,14 @@ def monitor_dataframe(
     if raw_df.index.name is None:
         raw_df.index.name = "timestamp"
 
+    # Quality uses raw values so invalid readings and isolated spikes remain
+    # visible as metadata; preprocessing retains its existing clean data output.
+    signal_quality = assess_signal_quality(raw_df)
+    invalid_measurements = invalid_measurement_mask(raw_df)
     processed_df = preprocess_data(raw_df)
     baseline = calculate_baseline(processed_df, window=baseline_window)
     deviation = calculate_deviation(processed_df, baseline)
+    trends = calculate_trends(processed_df)
 
     threshold_violations = pd.DataFrame(
         {
@@ -116,43 +134,185 @@ def monitor_dataframe(
         index=processed_df.index,
     )
     baseline_ready = baseline.notna().all(axis=1)
-    deviation_count = threshold_violations.sum(axis=1).astype(int)
-    candidate_alert = ((deviation_count >= 2) & baseline_ready).rename("candidate_alert")
+    # Signal quality is descriptive metadata, not an alert-suppression gate.
+    # Only explicitly invalid measurements are excluded from numerical alert
+    # evidence. Suspicious or sparse/fill-derived values can still contribute if
+    # the existing multi-vital and persistence rules are genuinely satisfied.
+    alert_eligible = threshold_violations & ~invalid_measurements
+    deviation_count = alert_eligible.sum(axis=1).astype(int)
+    candidate_alert = ((deviation_count >= MIN_DEVIATING_VITALS) & baseline_ready).rename("candidate_alert")
     persistent_alert = apply_persistence(candidate_alert, duration=persistence_duration)
+    lifecycle = manage_alert_lifecycle(
+        candidate_alert,
+        persistent_alert,
+        recovery_duration=RECOVERY_DURATION_SECONDS,
+    )
 
     monitoring_results = processed_df.copy()
     for vital in VITAL_COLUMNS:
         monitoring_results[f"{vital}_baseline"] = baseline[vital]
         monitoring_results[f"{vital}_deviation"] = deviation[vital]
+        monitoring_results[f"{vital}_trend"] = trends[vital]
+        monitoring_results[f"{vital}_signal_quality"] = signal_quality[vital]
+        monitoring_results[f"{vital}_invalid"] = invalid_measurements[vital]
     monitoring_results["deviation_count"] = deviation_count
     monitoring_results["candidate_alert"] = candidate_alert
     monitoring_results["persistent_alert"] = persistent_alert
+    monitoring_results["alert_state"] = lifecycle["alert_state"]
+    monitoring_results["active_alert_id"] = lifecycle["active_alert_id"]
+    monitoring_results["event_id"] = lifecycle["active_alert_id"].map(
+        lambda value: f"case_{case_id}_event_{int(value):03d}" if pd.notna(value) else None
+    )
 
-    # Emit one event when each persistent run begins, avoiding an alert for every
-    # second of one continuous physiological deviation.
-    persistent_start = persistent_alert & ~persistent_alert.shift(1, fill_value=False)
+    # Remember the first sample of each candidate run. When persistence later
+    # confirms an event, its compact history begins at the true deviation onset
+    # rather than only at the tenth confirmation sample.
+    candidate_starts: dict[Any, tuple[Any, int]] = {}
+    run_start_position: int | None = None
+    for position, timestamp in enumerate(monitoring_results.index):
+        if bool(candidate_alert.iloc[position]):
+            if run_start_position is None:
+                run_start_position = position
+        else:
+            run_start_position = None
+        if monitoring_results.at[timestamp, "alert_state"] == "alert_started":
+            candidate_starts[timestamp] = (
+                monitoring_results.index[run_start_position],
+                run_start_position,
+            )
+
+    def vital_details_at(timestamp: Any, vitals: list[str]) -> dict[str, dict[str, Any]]:
+        details: dict[str, dict[str, Any]] = {}
+        for vital in vitals:
+            current = monitoring_results.at[timestamp, vital]
+            baseline_value = monitoring_results.at[timestamp, f"{vital}_baseline"]
+            relative_deviation = monitoring_results.at[timestamp, f"{vital}_deviation"]
+            direction = "stable"
+            if pd.notna(current) and pd.notna(baseline_value):
+                direction = "increasing" if current > baseline_value else "decreasing" if current < baseline_value else "stable"
+            details[vital] = {
+                "current": float(current),
+                "baseline": float(baseline_value),
+                "relative_deviation": float(relative_deviation),
+                "direction": direction,
+                "trend": str(monitoring_results.at[timestamp, f"{vital}_trend"]),
+                "signal_quality": str(monitoring_results.at[timestamp, f"{vital}_signal_quality"]),
+            }
+        return details
+
+    # Preserve ``alerts`` as started events for compatibility. Lifecycle events
+    # additionally include recoveries, while the result dataframe shows active
+    # state at every timestamp without emitting duplicate notifications.
     alerts: list[dict[str, Any]] = []
-    for timestamp in monitoring_results.index[persistent_start]:
-        affected_vitals = [
-            vital for vital in VITAL_COLUMNS if bool(threshold_violations.at[timestamp, vital])
-        ]
-        deviation_values = {vital: deviation.at[timestamp, vital] for vital in affected_vitals}
-        alerts.append(
-            create_alert(
+    lifecycle_events: list[dict[str, Any]] = []
+    event_tracker = PhysiologicalEventTracker(case_id)
+    for timestamp in monitoring_results.index:
+        state = monitoring_results.at[timestamp, "alert_state"]
+        alert_id = monitoring_results.at[timestamp, "active_alert_id"]
+        if state == "alert_started":
+            affected_vitals = [
+                vital for vital in VITAL_COLUMNS if bool(alert_eligible.at[timestamp, vital])
+            ]
+            details = vital_details_at(timestamp, affected_vitals)
+            start_timestamp, start_position = candidate_starts[timestamp]
+            initial_details = vital_details_at(start_timestamp, affected_vitals)
+            event_tracker.start(int(alert_id), start_timestamp, affected_vitals, initial_details)
+            current_position = monitoring_results.index.get_loc(timestamp)
+            for position in range(start_position + 1, current_position + 1):
+                historical_timestamp = monitoring_results.index[position]
+                event_tracker.update(
+                    int(alert_id),
+                    historical_timestamp,
+                    vital_details_at(historical_timestamp, affected_vitals),
+                )
+            snapshot = event_tracker.snapshot(int(alert_id), timestamp, "alert_started")
+            event = create_alert(
                 case_id=case_id,
                 timestamp=timestamp,
                 affected_vitals=affected_vitals,
-                deviation_values=deviation_values,
+                deviation_values={vital: details[vital]["relative_deviation"] for vital in affected_vitals},
                 duration=persistence_duration,
+                vital_details=details,
             )
-        )
+            event.update(snapshot)
+            event["event_duration_seconds"] = snapshot["duration_seconds"]
+            alerts.append(event)
+            lifecycle_events.append(event)
+        elif state in {"alert_active", "recovering", "alert_recovered"} and pd.notna(alert_id):
+            active_event = event_tracker.active_events.get(int(alert_id))
+            if active_event is None:
+                continue
+            affected_vitals = active_event["affected_vitals"]
+            details = vital_details_at(timestamp, affected_vitals)
+            if state == "alert_recovered":
+                snapshot = event_tracker.recover(int(alert_id), timestamp, details)
+                if snapshot is not None:
+                    recovery_event = create_alert(
+                        case_id=case_id,
+                        timestamp=timestamp,
+                        affected_vitals=affected_vitals,
+                        deviation_values={vital: details[vital]["relative_deviation"] for vital in affected_vitals},
+                        duration=snapshot["duration_seconds"],
+                        alert_state="alert_recovered",
+                        vital_details=details,
+                        reason="Multi-vital physiological deviation recovered toward baseline",
+                    )
+                    recovery_event.update(snapshot)
+                    recovery_event["end_timestamp"] = timestamp
+                    lifecycle_events.append(recovery_event)
+            else:
+                event_tracker.update(int(alert_id), timestamp, details, state)
+
+    def count_short_candidate_runs(series: pd.Series) -> int:
+        """Count candidate runs that never meet the existing persistence rule."""
+        count = 0
+        run_length = 0
+        for value in series.astype(bool):
+            if value:
+                run_length += 1
+            elif run_length:
+                if run_length < persistence_duration:
+                    count += 1
+                run_length = 0
+        if run_length and run_length < persistence_duration:
+            count += 1
+        return count
+
+    raw_deviation_count = threshold_violations.sum(axis=1).astype(int)
+    failed_multi_vital = int(
+        (baseline_ready & raw_deviation_count.gt(0) & deviation_count.lt(MIN_DEVIATING_VITALS)).sum()
+    )
+    monitoring_summary = {
+        "threshold_violation_samples": int((baseline_ready & raw_deviation_count.gt(0)).sum()),
+        "candidate_deviation_samples": int(candidate_alert.sum()),
+        "failed_multi_vital_requirement_samples": failed_multi_vital,
+        "candidate_runs_failed_persistence": count_short_candidate_runs(candidate_alert),
+        "candidate_rejected_insufficient_data": 0,
+        "invalid_measurements": int(invalid_measurements.to_numpy().sum()),
+        "suspicious_measurements": int(signal_quality.eq("suspicious").to_numpy().sum()),
+        "insufficient_data_measurements": int(signal_quality.eq("insufficient_data").to_numpy().sum()),
+        "alert_started_events": len(alerts),
+        "alert_recovered_events": sum(
+            event["alert_state"] == "alert_recovered" for event in lifecycle_events
+        ),
+        "currently_active_events": len(event_tracker.active_events),
+        "independent_monitoring_events": len(alerts),
+    }
 
     return {
+        "raw_df": raw_df,
         "df": processed_df,
         "baseline": baseline,
         "deviation": deviation,
+        "trends": trends,
+        "signal_quality": signal_quality,
+        "invalid_measurements": invalid_measurements,
         "monitoring_results": monitoring_results,
         "alerts": alerts,
+        "lifecycle_events": lifecycle_events,
+        "completed_events": event_tracker.completed_events,
+        "active_events": event_tracker.current_events(monitoring_results.index[-1]),
+        "monitoring_summary": monitoring_summary,
     }
 
 
