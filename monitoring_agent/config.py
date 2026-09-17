@@ -11,10 +11,41 @@ DEVIATION_THRESHOLDS = {
     "HR": 0.20,
     "MAP": 0.20,
     "SpO2": 0.05,
-    "RR": 0.25,
+    "RR": 0.40,
 }
-MIN_DEVIATING_VITALS = 2
 PERSISTENCE_SECONDS = 10
+
+# ---------------------------------------------------------------------------
+# Severity classification (configurable engineering defaults)
+# ---------------------------------------------------------------------------
+# Multipliers applied to the per-vital DEVIATION_THRESHOLDS to form severity
+# tier boundaries.  For example HR base = 0.20: mild >= 0.20, moderate >= 0.30,
+# severe >= 0.40, critical >= 0.60.
+SEVERITY_MULTIPLIERS = {
+    "mild": 1.0,
+    "moderate": 1.5,
+    "severe": 2.0,
+    "critical": 3.0,
+}
+
+# Persistence duration (seconds) required before an alert is raised at each
+# severity level.  Higher severity requires less persistence to trigger quickly.
+SEVERITY_PERSISTENCE = {
+    "mild": 10,
+    "moderate": 8,
+    "severe": 5,
+    "critical": 5,
+}
+
+# Minimum number of simultaneously deviating vitals required per severity.
+# Severe and critical single-vital deviations can trigger independently;
+# mild and moderate still require corroboration from a second vital.
+SEVERITY_MIN_VITALS = {
+    "mild": 2,
+    "moderate": 2,
+    "severe": 1,
+    "critical": 1,
+}
 
 # Trend classification uses robust medians from the first and final thirds of a
 # recent window, rather than reacting to one or two noisy readings.

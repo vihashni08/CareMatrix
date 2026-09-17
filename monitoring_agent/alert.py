@@ -13,8 +13,9 @@ def create_alert(
     duration: int,
     *,
     alert_state: str = "alert_started",
+    severity: str = "moderate",
     vital_details: Mapping[str, Mapping[str, Any]] | None = None,
-    reason: str = "Persistent multi-vital physiological deviation detected",
+    reason: str = "Persistent physiological deviation detected",
 ) -> dict:
     """Create a backward-compatible event for a future Risk Prediction Agent."""
     vitals = list(affected_vitals)
@@ -24,6 +25,7 @@ def create_alert(
         "event": "physiological_deviation",
         "alert_type": "physiological_deviation",
         "alert_state": alert_state,
+        "severity": severity,
         "affected_vitals": vitals,
         "deviation_values": {vital: float(deviation_values[vital]) for vital in vitals},
         "duration_seconds": int(duration),
