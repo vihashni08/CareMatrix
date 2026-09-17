@@ -27,7 +27,7 @@ def synthetic_patient_data() -> pd.DataFrame:
         index=pd.RangeIndex(sample_count, name="timestamp"),
     )
     # Enough simultaneous deviations to exceed the configured thresholds for
-    # longer than the default 10-second persistence requirement.
+    # longer than the severity-based persistence requirement.
     data.loc[70:80, ["HR", "MAP", "SpO2"]] = [95.0, 60.0, 90.0]
     return data[VITAL_COLUMNS]
 
@@ -57,7 +57,7 @@ def print_summary(case_id: int, results: dict) -> None:
     if monitoring_summary:
         print("\nAlert conversion breakdown:")
         print(f"  Threshold-violation samples: {monitoring_summary['threshold_violation_samples']}")
-        print(f"  Failed multi-vital requirement: {monitoring_summary['failed_multi_vital_requirement_samples']}")
+        print(f"  Failed severity gate: {monitoring_summary['failed_severity_gate_samples']}")
         print(f"  Candidate runs failed persistence: {monitoring_summary['candidate_runs_failed_persistence']}")
         print(f"  Rejected because of insufficient data: {monitoring_summary['candidate_rejected_insufficient_data']}")
         print(f"  Invalid measurements: {monitoring_summary['invalid_measurements']}")
@@ -76,6 +76,7 @@ def print_summary(case_id: int, results: dict) -> None:
             print(f"  Timestamp: {timestamp}")
             print(f"  Event start: {alert.get('start_timestamp', timestamp)}")
             print(f"  Affected vitals: {', '.join(alert['affected_vitals'])}")
+            print(f"  Severity: {alert.get('severity', 'unknown')}")
             print(f"  Persistence duration: {alert['duration_seconds']} seconds")
             for vital in alert["affected_vitals"]:
                 current_value = monitoring_results.at[timestamp, vital]
@@ -107,7 +108,7 @@ def print_summary(case_id: int, results: dict) -> None:
                     f"trend={summary['current_trend']}, quality={summary['signal_quality']}"
                 )
     else:
-        print("\nNo persistent multi-vital deviations detected for this case.")
+        print("\nNo persistent physiological deviations detected for this case.")
 
 
 def main() -> None:

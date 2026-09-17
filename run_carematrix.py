@@ -4,208 +4,163 @@ from monitoring_agent.monitoring_agent import run_monitoring
 from risk_agent.risk_prediction_agent import RiskPredictionAgent
 
 
-# ============================================================
-# PRINT MONITORING OUTPUT
-# ============================================================
+def print_monitoring_output(monitoring_results: dict) -> None:
+    """Print the existing Monitoring Agent output."""
 
-def print_monitoring_output(monitoring_results):
+    alerts = monitoring_results.get("alerts", [])
 
-    print("\n")
-    print("=" * 65)
+    print("\n" + "=" * 60)
     print("MONITORING AGENT OUTPUT")
-    print("=" * 65)
+    print("=" * 60)
 
-    alerts = monitoring_results.get(
-        "alerts",
-        []
+    print(
+        f"Case ID              : "
+        f"{alerts[0]['case_id'] if alerts else 'N/A'}"
     )
 
-    # --------------------------------------------------------
-    # NO DEVIATION
-    # --------------------------------------------------------
+    print(
+        f"Persistent Alerts    : {len(alerts)}"
+    )
 
     if not alerts:
-
-        print(
-            "Deviation Detected : NO"
-        )
-
-        print(
-            "Status             : Normal"
-        )
-
-        print(
-            "Persistent Alert   : None"
-        )
-
+        print("\nNo persistent physiological alerts detected.")
         return
 
-    # --------------------------------------------------------
-    # DEVIATION DETECTED
-    # --------------------------------------------------------
-
-    print(
-        "Deviation Detected : YES"
-    )
-
-    print(
-        f"Persistent Alerts  : {len(alerts)}"
-    )
-
-    print()
-
-    for i, alert in enumerate(
-        alerts,
-        start=1
-    ):
-
+    for number, alert in enumerate(alerts, start=1):
+        print(f"\nAlert {number}")
         print(
-            f"Alert {i}"
+            f"  Event ID           : "
+            f"{alert.get('event_id', 'N/A')}"
         )
-
         print(
-            f"  Event ID        : "
-            f"{alert.get('event_id')}"
+            f"  Timestamp          : "
+            f"{alert.get('timestamp', 'N/A')}"
         )
-
         print(
-            f"  Timestamp       : "
-            f"{alert.get('timestamp')}"
-        )
-
-        print(
-            f"  Affected Vitals : "
+            f"  Affected Vitals    : "
             f"{', '.join(alert.get('affected_vitals', []))}"
         )
-
         print(
-            f"  Duration        : "
-            f"{alert.get('duration_seconds')} seconds"
+            f"  Severity           : "
+            f"{alert.get('severity', 'N/A')}"
+        )
+        print(
+            f"  Duration           : "
+            f"{alert.get('duration_seconds', 'N/A')} seconds"
         )
 
-        print(
-            "  Deviations:"
-        )
 
-        for vital, deviation in alert.get(
-            "deviation_values",
-            {}
-        ).items():
+def print_risk_result(
+    risk_results: list[dict],
+) -> None:
+    """Print actual Random Forest predictions."""
 
-            print(
-                f"    {vital}: "
-                f"{deviation * 100:.2f}%"
-            )
-
-        print()
-
-
-# ============================================================
-# PRINT RISK OUTPUT
-# ============================================================
-
-def print_risk_result(results):
-    print("\n")
-    print("=" * 65)
+    print("\n" + "=" * 60)
     print("RISK PREDICTION AGENT OUTPUT")
-    print("=" * 65)
+    print("=" * 60)
 
-    for result in results:
+    if not risk_results:
+        print("\nNo alerts were passed to the Risk Prediction Agent.")
+        return
 
-        alert_number = result.get("alert_number")
-
-        if alert_number is None:
-            print("Case-Level Risk Result")
-        else:
-            print(f"Alert {alert_number}")
-
-        event_id = result.get("event_id")
-
-        if event_id is not None:
-            print(f"  Event ID            : {event_id}")
+    for number, result in enumerate(risk_results, start=1):
+        print(f"\nAlert {number}")
 
         print(
-            "  Deviation Detected  : "
-            f"{'YES' if result.get('deviation_detected') else 'NO'}"
+            f"  Event ID            : "
+            f"{result.get('event_id', 'N/A')}"
         )
 
-        print(f"  Risk Level          : {result.get('risk_level')}")
-        print(f"  Reason              : {result.get('reason')}")
-        print(f"  Source              : {result.get('source')}")
-        print()
+        print(
+            f"  Risk Probability    : "
+            f"{result['risk_probability'] * 100:.2f}%"
+        )
 
+        print(
+            f"  Risk Level          : "
+            f"{result['risk_level']}"
+        )
 
-# ============================================================
-# MAIN CAREMATRIX WORKFLOW
-# ============================================================
+        print(
+            f"  Model               : "
+            f"{result['model']}"
+        )
 
-def run_carematrix(case_id):
+        print(
+            f"  Threshold           : "
+            f"{result['threshold']:.2f}"
+        )
 
-    print("\n")
-    print("=" * 65)
-    print("             CAREMATRIX")
-    print("     MONITORING → RISK PREDICTION")
-    print("=" * 65)
+        print(
+            f"  Alert Timestamp     : "
+            f"{result.get('timestamp', result.get('window_end', 'N/A'))}"
+        )
 
-    # --------------------------------------------------------
-    # STEP 1: MONITORING AGENT
-    # --------------------------------------------------------
+        print(
+            f"  5-Min Window        : "
+            f"{result['window_start']:.0f} - "
+            f"{result['window_end']:.0f} sec"
+        )
 
-    print("\n[1] Running Monitoring Agent...")
+        print(
+            f"  Window Samples      : "
+            f"{result['window_samples']}"
+        )
 
-    monitoring_results = run_monitoring(
-        case_id
-    )
+        print(
+            f"  Severity            : "
+            f"{result['severity']}"
+        )
 
-    # --------------------------------------------------------
-    # DISPLAY MONITORING RESULT
-    # --------------------------------------------------------
+        print(
+            f"  Affected Vitals     : "
+            f"{', '.join(result['affected_vitals'])}"
+        )
 
-    print_monitoring_output(
-        monitoring_results
-    )
+def run_carematrix(case_id: int) -> dict:
+    """
+    Run the complete CareMatrix pipeline.
 
-    # --------------------------------------------------------
-    # STEP 2: RISK PREDICTION AGENT
-    # --------------------------------------------------------
+    Monitoring Agent remains unchanged.
+    Its output is passed directly to the Risk Prediction Agent.
+    """
 
-    print("\n[2] Running Risk Prediction Agent...")
+    print("\n" + "=" * 60)
+    print("CARE MATRIX")
+    print("=" * 60)
+
+    print("\n[1] Loading Patient Data...")
+    print(f"Case ID: {case_id}")
+
+    print("\n[2] Running Monitoring Agent...")
+
+    monitoring_results = run_monitoring(case_id)
+
+    print_monitoring_output(monitoring_results)
+
+    print("\n[3] Running Risk Prediction Agent...")
 
     risk_agent = RiskPredictionAgent()
 
-    risk_result = (
-        risk_agent.process_monitoring_output(
-            monitoring_results
-        )
+    risk_results = risk_agent.process_monitoring_output(
+        monitoring_results,
+        case_id=case_id,
     )
 
-    # --------------------------------------------------------
-    # DISPLAY RISK RESULT
-    # --------------------------------------------------------
+    print_risk_result(risk_results)
 
-    print_risk_result(
-        risk_result
-    )
-
-    # --------------------------------------------------------
-    # FINAL RESULT
-    # --------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("CARE MATRIX RUN COMPLETE")
+    print("=" * 60)
 
     return {
         "case_id": case_id,
-        "monitoring": monitoring_results,
-        "risk": risk_result,
+        "monitoring_results": monitoring_results,
+        "risk_results": risk_results,
     }
 
 
-# ============================================================
-# RUN
-# ============================================================
-
 if __name__ == "__main__":
-
     CASE_ID = 4
 
-    results = run_carematrix(
-        CASE_ID
-    )
+    run_carematrix(CASE_ID)

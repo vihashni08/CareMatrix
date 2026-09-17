@@ -138,12 +138,14 @@ class PhysiologicalEventTracker:
         timestamp: Any,
         affected_vitals: list[str],
         details: Mapping[str, Mapping[str, Any]],
+        severity: str = "moderate",
     ) -> dict[str, Any]:
         """Start one event and return its compact alert-start snapshot."""
         event = {
             "event_id": self._event_id(numeric_id),
             "case_id": self.case_id,
             "start_timestamp": timestamp,
+            "severity": severity,
             "affected_vitals": list(affected_vitals),
             "vital_summary": {
                 vital: self._summary_from_detail(details[vital], timestamp)
@@ -191,6 +193,7 @@ class PhysiologicalEventTracker:
             "event_id": event["event_id"],
             "case_id": self.case_id,
             "event_state": event_state,
+            "severity": event.get("severity", "moderate"),
             "start_timestamp": event["start_timestamp"],
             "current_timestamp": timestamp,
             "duration_seconds": int(timestamp - event["start_timestamp"] + 1),

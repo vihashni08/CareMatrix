@@ -48,14 +48,10 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
             + ", ".join(all_missing)
         )
 
-    # Fill only short internal gaps first; long gaps are handled conservatively
-    # below so no rows need to be discarded.
+    # Fill only short internal gaps (up to 5 samples) using linear
+    # interpolation. Long gaps, leading uncalibrated periods, and trailing
+    # disconnected periods remain NaN rather than being propagated by
+    # unrestricted forward/backward filling, preventing invalid baselines.
     cleaned = cleaned.interpolate(method="linear", limit=5, limit_area="inside")
 
-    # Use nearby valid readings for any leading, trailing, or longer remaining
-    # gaps. This is intentionally not an outlier-removal step.
-    cleaned = cleaned.ffill().bfill()
-
-    if cleaned.isna().any().any():
-        raise ValueError("Missing values remain after preprocessing.")
     return cleaned
