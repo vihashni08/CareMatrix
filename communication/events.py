@@ -13,6 +13,7 @@ class EventType(str, Enum):
     MONITORING_ALERT = "monitoring_alert"
     MONITORING_RECOVERY = "monitoring_recovery"
     RISK_DECISION = "risk_decision"
+    DATA_ANALYSIS = "data_analysis"
     AGENT_HEARTBEAT = "agent_heartbeat"
     AGENT_FAILURE = "agent_failure"
 
@@ -78,6 +79,35 @@ class RiskDecisionEvent:
     status: str = "success"  # "success", "failed", "retry"
     recommended_action: str = ""
     retry_count: int = 0
+    # Context copied from the monitoring event.  These fields let downstream
+    # agents analyse the same assessment without reinterpreting model output.
+    severity: str = "unknown"
+    affected_vitals: list[str] = field(default_factory=list)
+    window_start: float | None = None
+    window_end: float | None = None
+    message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DataAnalysisEvent:
+    """Structured, non-diagnostic analytical evidence for Clinical Reasoning."""
+
+    case_id: int
+    event_id: str
+    timestamp: float
+    risk_level: str
+    trend_metrics: dict[str, Any]
+    pattern_identified: list[str]
+    important_changes: list[str]
+    data_quality_flag: bool
+    analysis_status: str
+    source: str = "Data Analysis Agent"
+    data_quality_details: dict[str, Any] = field(default_factory=dict)
+    error_message: str | None = None
     message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: float = field(default_factory=time.time)
 

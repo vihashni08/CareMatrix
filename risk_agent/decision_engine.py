@@ -69,6 +69,11 @@ class RiskDecisionEngine:
             reason=reason,
             status="success",
             recommended_action=recommended_action,
+            severity=event.severity,
+            affected_vitals=list(event.affected_vitals),
+            # The established Risk Agent feature window remains five minutes.
+            window_start=max(0.0, float(event.timestamp) - 300.0),
+            window_end=float(event.timestamp),
         )
 
     def decide_from_failure(
@@ -103,5 +108,9 @@ class RiskDecisionEngine:
             status=status,
             recommended_action=recommended_action,
             retry_count=retry_count,
+            severity=event.severity,
+            affected_vitals=list(event.affected_vitals),
+            window_start=max(0.0, float(event.timestamp) - 300.0),
+            window_end=float(event.timestamp),
         )
 

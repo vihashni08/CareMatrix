@@ -23,6 +23,7 @@ from typing import Any
 
 from communication.event_queue import EventQueue
 from communication.events import MonitoringDecision, MonitoringEvent, RiskDecisionEvent
+from data_analysis_agent import DataAnalysisAgent
 from monitoring_agent.monitoring_agent import MonitoringAgent, monitor_dataframe, run_monitoring
 from replay_stream import PatientStreamReplayer
 from risk_agent.risk_agent import RiskAgent
@@ -118,6 +119,9 @@ def run_agent_demonstration(
         max_retries=3,
         verbose=True,
     )
+    # Data Analysis consumes completed model decisions and publishes structured
+    # evidence to the Clinical Reasoning Agent input topic.
+    data_analysis_agent = DataAnalysisAgent(event_queue=event_queue)
     if fail_risk:
         risk_agent.inject_failure = True
         print("[Demo Setup] Risk Agent configured with intentional ML tool failure hook.")
@@ -142,6 +146,7 @@ def run_agent_demonstration(
     print("\n--- Starting Independent Agent Workers ---")
     supervisor.start()
     risk_agent.start()
+    data_analysis_agent.start()
 
     # 6. Stream patient observations through Monitoring Agent worker thread
     replayer = PatientStreamReplayer(case_id=case_id, delay_seconds=0.0)
@@ -161,9 +166,11 @@ def run_agent_demonstration(
 
     # 7. Gracefully stop workers
     risk_agent.stop()
+    data_analysis_agent.stop()
     supervisor.stop()
     monitoring_agent.join(timeout=1.0)
     risk_agent.join(timeout=1.0)
+    data_analysis_agent.join(timeout=1.0)
     supervisor.join(timeout=1.0)
     event_queue.shutdown()
 
@@ -187,6 +194,7 @@ def run_agent_demonstration(
     high_risk_cnt = sum(1 for d in risk_history if getattr(d, "decision", "") == "HIGH_RISK")
     low_risk_cnt = sum(1 for d in risk_history if getattr(d, "decision", "") == "LOW_RISK")
     fail_cnt = risk_agent.state.failure_count
+    analysis_history = event_queue.get_history("data_analysis_events")
 
     print("\n[Risk Agent]")
     print(f"  events_received     = {len(risk_agent.state.received_events)}")
@@ -195,6 +203,10 @@ def run_agent_demonstration(
     print(f"  low_risk            = {low_risk_cnt}")
     print(f"  failures            = {fail_cnt}")
     print(f"  model_tool          = {risk_agent.model_name}")
+
+    print("\n[Data Analysis Agent]")
+    print(f"  analyses            = {len(analysis_history)}")
+    print(f"  partial_analyses    = {sum(1 for e in analysis_history if e.analysis_status == 'partial_analysis')}")
 
     # Supervisor stats
     health = supervisor.check_health()
@@ -215,6 +227,7 @@ def run_agent_demonstration(
     return {
         "monitoring_stats": {"observations": obs_count, "escalations": esc_count, "recoveries": rec_count},
         "risk_stats": {"predictions": len(risk_history), "high_risk": high_risk_cnt, "low_risk": low_risk_cnt},
+        "data_analysis_stats": {"analyses": len(analysis_history)},
         "supervisor_stats": {"monitoring_status": mon_status, "risk_status": risk_status, "restarts": total_restarts},
     }
 
