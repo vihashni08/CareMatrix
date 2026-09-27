@@ -1,0 +1,231 @@
+CareMatrix - Data Analysis Agent Walkthrough
+=============================================
+
+1. What is newly implemented?
+-----------------------------
+The new Data Analysis Agent sits after the existing Risk Agent.  It receives a
+completed risk assessment, retrieves the corresponding recent vital-sign data,
+and produces structured analytical evidence for the future Clinical Reasoning
+Agent.
+
+New files
+---------
+data_analysis_agent/data_analysis_agent.py
+    Main event-driven DataAnalysisAgent implementation.
+
+data_analysis_agent/__init__.py
+    Exposes DataAnalysisAgent and PatientAnalysisState.
+
+tests/test_data_analysis_agent.py
+    Tests LOW RISK, HIGH RISK, and unavailable-data cases.
+
+Changed files
+-------------
+communication/events.py
+    Adds DataAnalysisEvent.  Extends RiskDecisionEvent with severity,
+    affected_vitals, window_start, and window_end for downstream context.
+
+risk_agent/decision_engine.py
+    Copies monitoring context onto the existing RiskDecisionEvent.  It does not
+    alter model inference, training, or the 0.16 threshold.
+
+run_carematrix.py
+    Starts/stops the Data Analysis Agent in the normal CareMatrix demo.
+
+2. Architecture and message flow
+--------------------------------
+
+    Patient data / VitalDB
+            |
+            v
+    MonitoringAgent
+            |  MonitoringEvent on "monitoring_events"
+            v
+    RiskAgent (unchanged RandomForestClassifier)
+            |  RiskDecisionEvent on "risk_decisions"
+            v
+    DataAnalysisAgent
+            |  DataAnalysisEvent on "data_analysis_events"
+            |  DataAnalysisEvent on "clinical_reasoning_events"
+            v
+    Future Clinical Reasoning Agent
+
+The project already uses an in-memory EventQueue and background worker loops.
+The Data Analysis Agent uses that same mechanism; no Kafka, networking, LLM,
+or unrelated concurrency was introduced.
+
+3. Input: the RiskDecisionEvent
+--------------------------------
+The existing project calls its completed risk assessment a RiskDecisionEvent.
+It now provides all input needed by data analysis:
+
+    patient_id            Patient/case identifier
+    event_id              Original monitoring event ID, for traceability
+    timestamp             Assessment timestamp
+    risk_probability      Existing Random Forest probability
+    risk_level            Existing LOW RISK / HIGH RISK result
+    severity              Monitoring severity copied from MonitoringEvent
+    affected_vitals       Vitals from the Monitoring event
+    window_start/end      Risk window bounds
+
+For standard RiskAgent events, the window is [max(0, timestamp - 300),
+timestamp].  This preserves the existing five-minute risk window.  The agent
+never recalculates or overrides LOW/HIGH classification.
+
+4. Vital data retrieval
+-----------------------
+The agent uses no invented data source.  It requests the established tracks at
+the existing five-second sample interval:
+
+    Solar8000/HR             -> HR
+    Solar8000/PLETH_SPO2     -> SpO2
+    Solar8000/RR             -> RR
+    Solar8000/NIBP_SBP       -> SBP
+    Solar8000/NIBP_DBP       -> DBP
+    Solar8000/NIBP_MBP       -> MAP
+    Solar8000/BT             -> BT
+
+First it calls vitaldb.load_case().  If VitalDB is unavailable, it uses the
+same project-style offline fallback:
+
+    data/processed/patient_<case_id>.csv
+
+It normalizes data into a DataFrame with Time plus the seven vital columns,
+then selects just the supplied five-minute assessment interval.
+
+5. Autonomous analysis lifecycle
+--------------------------------
+For every RiskDecisionEvent, process_event() does the following:
+
+    RECEIVE
+      Validate event type and event_id.
+    RETRIEVE
+      Load the patient's available VitalDB/local physiological data.
+    SELECT
+      Extract samples in the risk assessment window.
+    ASSESS QUALITY
+      Measure missingness, sample sufficiency, and possible artifacts.
+    ANALYSE
+      Calculate metrics and temporal trends for every available vital.
+    DETECT PATTERNS
+      Report observable directional, variability, multi-vital, and historical
+      comparison patterns.
+    RESPOND
+      Publish exactly one traceable DataAnalysisEvent, even on failure.
+
+This makes it a specialized agent rather than a utility function: it consumes
+events, owns analytical decision logic and patient-level state, decides what
+is applicable from available data, and produces messages for the next agent.
+
+6. Trend metrics
+----------------
+For each available HR, SpO2, RR, SBP, DBP, MAP, and BT, trend_metrics contains:
+
+    mean, minimum, maximum, standard_deviation
+    latest_value
+    change_over_window       latest - first valid sample
+    slope_per_sample         numpy.polyfit linear slope
+    trend                    increasing/decreasing/stable/insufficient_data
+    sample_count
+
+Trend labels are descriptive only.  A slope is considered stable when it is
+small relative to the vital's variation/recent scale; otherwise its sign gives
+increasing or decreasing.
+
+7. Pattern detection and risk-aware reporting
+----------------------------------------------
+The agent reports only directly observable patterns:
+
+    - increasing or decreasing affected-vital trend
+    - high variability (standard deviation above 10% of the window mean)
+    - simultaneous directional changes in two or more affected vitals
+    - behaviour matching/differing from a previous analysis for that patient
+
+For LOW RISK, the event explicitly retains LOW RISK and says whether available
+affected-vital data is stable or trending.  For HIGH RISK, it retains HIGH RISK
+and reports trend, multi-vital, and data-quality evidence.  It does not assign
+diagnoses such as sepsis, shock, or cardiac failure.
+
+8. Data-quality assessment
+--------------------------
+data_quality_flag becomes true if:
+
+    - there are too few samples;
+    - any vital is more than 50% missing; or
+    - a vital has a possible abrupt sensor-like jump relative to its median
+      observed change (requires at least three valid samples).
+
+data_quality_details records actual/expected sample counts and, for each vital,
+missing_ratio, valid_samples, and possible_artifact.  The agent does not remove
+source readings; it simply reports limitations.
+
+9. Patient-level state
+----------------------
+patient_states[case_id] holds:
+
+    last_analysed_timestamp
+    previous_trends
+    previous_data_quality_flag
+    previous_patterns
+    analysed_events
+
+This limited state allows comparison with recent patient behaviour.  It never
+changes the Risk Agent's classification or creates clinical conclusions.
+
+10. Output: DataAnalysisEvent
+-----------------------------
+Every result includes:
+
+    case_id, event_id, timestamp, risk_level
+    trend_metrics, pattern_identified, important_changes
+    data_quality_flag, analysis_status
+    source = "Data Analysis Agent"
+
+It additionally includes data_quality_details, error_message, message_id, and
+created_at for auditability.  analysis_status is "complete" when analysis is
+usable, or "partial_analysis" when input/window/data retrieval is inadequate.
+
+11. Error handling
+------------------
+No event is silently discarded.  If an event is invalid, no samples exist, or
+VitalDB/local loading fails, the exception is caught and a DataAnalysisEvent is
+still published with the original case ID/event ID, data_quality_flag=true,
+analysis_status="partial_analysis", and error_message populated.
+
+12. Example HIGH RISK output (abridged)
+---------------------------------------
+{
+  "case_id": 4,
+  "event_id": "case_4_event_014",
+  "risk_level": "HIGH RISK",
+  "pattern_identified": [
+    "HR shows a increasing trend in the assessment window.",
+    "MAP shows a decreasing trend in the assessment window.",
+    "Simultaneous directional changes are present across multiple affected vitals.",
+    "HIGH RISK classification retained; trend and data-quality evidence is provided for follow-up reasoning."
+  ],
+  "data_quality_flag": false,
+  "analysis_status": "complete",
+  "source": "Data Analysis Agent"
+}
+
+13. How to run and validate
+---------------------------
+Run the Data Analysis tests:
+
+    python -m unittest tests.test_data_analysis_agent -v
+
+Run all tests:
+
+    python -m unittest discover -s tests -v
+
+Run the integrated demonstration (Data Analysis starts automatically):
+
+    python run_carematrix.py --case-id 4 --samples 100 --delay 0
+
+Validation performed:
+    - Existing test suite passed.
+    - New LOW/HIGH/partial analysis tests passed.
+    - A queue-based handoff test confirmed DataAnalysisEvent reaches
+      "clinical_reasoning_events".
+

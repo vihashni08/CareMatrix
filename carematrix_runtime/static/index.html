@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CareMatrix — Multi-Agent Clinician Decision Support</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- React 18 & Babel Standalone CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            medDark: '#0b1120',
+            medCard: '#131e36',
+            medBorder: '#1e293b',
+            medPrimary: '#0ea5e9',
+            medAlert: '#ef4444',
+            medWarning: '#f59e0b',
+            medSuccess: '#10b981',
+            medIndigo: '#6366f1',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @keyframes pulse-fast {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .pulse-alert {
+      animation: pulse-fast 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    /* Custom scrollbar for clean clinical UI */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-medDark text-slate-100 font-sans min-h-screen antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function App() {
+      const [patients, setPatients] = useState([]);
+      const [selectedPid, setSelectedPid] = useState(101);
+      const [patientDetail, setPatientDetail] = useState(null);
+      const [vitalsHistory, setVitalsHistory] = useState([]);
+      const [activeAlerts, setActiveAlerts] = useState([]);
+      const [systemHealth, setSystemHealth] = useState(null);
+      const [sseConnected, setSseConnected] = useState(false);
+      const [orderChecked, setOrderChecked] = useState({});
+      const [triggeringScenario, setTriggeringScenario] = useState(false);
+
+      const chartRef = useRef(null);
+      const chartInstance = useRef(null);
+
+      // Fetch initial data
+      const refreshPatientDetail = async (pid) => {
+        try {
+          const res = await fetch(`/api/patients/${pid}`);
+          if (res.ok) {
+            const data = await res.json();
+            setPatientDetail(data);
+          }
+          const vRes = await fetch(`/api/patients/${pid}/vitals?limit=40`);
+          if (vRes.ok) {
+            const vData = await vRes.json();
+            setVitalsHistory(vData.vitals || []);
+          }
+        } catch (e) {
+          console.error("Error fetching detail:", e);
+        }
+      };
+
+      const refreshPatientsList = async () => {
+        try {
+          const res = await fetch('/api/patients');
+          if (res.ok) {
+            const data = await res.json();
+            setPatients(data.patients || []);
+          }
+          const hRes = await fetch('/api/health');
+          if (hRes.ok) {
+            const hData = await hRes.json();
+            setSystemHealth(hData);
+          }
+          const aRes = await fetch('/api/alerts');
+          if (aRes.ok) {
+            const aData = await aRes.json();
+            setActiveAlerts(aData.active || []);
+          }
+        } catch (e) {
+          console.error("Error refreshing state:", e);
+        }
+      };
+
+      useEffect(() => {
+        refreshPatientsList();
+        refreshPatientDetail(selectedPid);
+      }, [selectedPid]);
+
+      // Connect to Server-Sent Events (SSE)
+      useEffect(() => {
+        const es = new EventSource('/api/events/stream');
+
+        es.onopen = () => setSseConnected(true);
+        es.onerror = () => setSseConnected(false);
+
+        es.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'vital_tick') {
+              const obs = msg.data;
+              const pid = obs.patient_id || obs.case_id;
+
+              // Update patient card summary
+              setPatients(prev => prev.map(p => {
+                if (p.patient_id === pid) {
+                  return { ...p, latest_vitals: obs, last_updated: Date.now() / 1000 };
+                }
+                return p;
+              }));
+
+              // If for active patient, update detail vitals & history
+              if (pid === selectedPid) {
+                setPatientDetail(prev => prev ? { ...prev, latest_vitals: obs } : prev);
+                setVitalsHistory(prev => {
+                  const updated = [...prev, obs];
+                  return updated.slice(-40);
+                });
+              }
+            } else if (msg.type === 'alert_updated' || msg.type === 'monitoring_alert') {
+              refreshPatientsList();
+              refreshPatientDetail(selectedPid);
+            } else if (msg.type === 'clinical_reasoning' || msg.type === 'care_coordination' || msg.type === 'risk_prediction' || msg.type === 'data_analysis') {
+              refreshPatientDetail(selectedPid);
+              refreshPatientsList();
+            } else if (msg.type === 'heartbeat') {
+              // Health pulse
+            }
+          } catch (e) {
+            console.error("SSE parse error:", e);
+          }
+        };
+
+        const interval = setInterval(refreshPatientsList, 4000);
+        return () => {
+          es.close();
+          clearInterval(interval);
+        };
+      }, [selectedPid]);
+
+      // Initialize / Update Chart.js waveform
+      useEffect(() => {
+        if (!chartRef.current) return;
+        const ctx = chartRef.current.getContext('2d');
+
+        const labels = vitalsHistory.map((_, i) => `${i + 1}s`);
+        const hrData = vitalsHistory.map(v => v.hr || v.HR || 0);
+        const mapData = vitalsHistory.map(v => v.map || v.MAP || 0);
+        const spo2Data = vitalsHistory.map(v => v.spo2 || v.SpO2 || 0);
+
+        if (!chartInstance.current) {
+          chartInstance.current = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: 'Heart Rate (BPM)',
+                  data: hrData,
+                  borderColor: '#ef4444',
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  borderWidth: 2,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  yAxisID: 'yHR',
+                },
+                {
+                  label: 'MAP (mmHg)',
+                  data: mapData,
+                  borderColor: '#0ea5e9',
+                  backgroundColor: 'rgba(14, 165, 233, 0.1)',
+                  borderWidth: 2,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  yAxisID: 'yMAP',
+                },
+                {
+                  label: 'SpO2 (%)',
+                  data: spo2Data,
+                  borderColor: '#10b981',
+                  backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                  borderWidth: 2,
+                  tension: 0.3,
+                  pointRadius: 2,
+                  yAxisID: 'ySpO2',
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animation: false,
+              scales: {
+                x: {
+                  grid: { color: '#1e293b' },
+                  ticks: { color: '#64748b' }
+                },
+                yHR: {
+                  type: 'linear',
+                  position: 'left',
+                  min: 40,
+                  max: 160,
+                  grid: { color: '#1e293b' },
+                  ticks: { color: '#ef4444' },
+                  title: { display: true, text: 'HR (BPM)', color: '#ef4444' }
+                },
+                yMAP: {
+                  type: 'linear',
+                  position: 'right',
+                  min: 40,
+                  max: 130,
+                  grid: { drawOnChartArea: false },
+                  ticks: { color: '#0ea5e9' },
+                  title: { display: true, text: 'MAP (mmHg)', color: '#0ea5e9' }
+                },
+                ySpO2: {
+                  type: 'linear',
+                  position: 'right',
+                  min: 80,
+                  max: 102,
+                  grid: { drawOnChartArea: false },
+                  ticks: { color: '#10b981' },
+                  display: false,
+                }
+              },
+              plugins: {
+                legend: { labels: { color: '#cbd5e1' } }
+              }
+            }
+          });
+        } else {
+          chartInstance.current.data.labels = labels;
+          chartInstance.current.data.datasets[0].data = hrData;
+          chartInstance.current.data.datasets[1].data = mapData;
+          chartInstance.current.data.datasets[2].data = spo2Data;
+          chartInstance.current.update('none');
+        }
+      }, [vitalsHistory]);
+
+      // Actions
+      const handleAcknowledgeAlert = async (alertId) => {
+        try {
+          const res = await fetch(`/api/alerts/${alertId}/acknowledge`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clinician_id: "Dr. Smith (Attending)" })
+          });
+          if (res.ok) {
+            refreshPatientsList();
+            refreshPatientDetail(selectedPid);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      const handleResolveAlert = async (alertId) => {
+        try {
+          const res = await fetch(`/api/alerts/${alertId}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: "Hemodynamic stabilization verified at bedside." })
+          });
+          if (res.ok) {
+            refreshPatientsList();
+            refreshPatientDetail(selectedPid);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      const handleTriggerScenario = async (scenario) => {
+        setTriggeringScenario(true);
+        try {
+          await fetch('/api/scenarios/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ patient_id: selectedPid, scenario })
+          });
+          setTimeout(() => {
+            refreshPatientDetail(selectedPid);
+            refreshPatientsList();
+            setTriggeringScenario(false);
+          }, 300);
+        } catch (e) {
+          console.error(e);
+          setTriggeringScenario(false);
+        }
+      };
+
+      const activePatient = patients.find(p => p.patient_id === selectedPid) || {};
+      const vitals = patientDetail?.latest_vitals || activePatient?.latest_vitals || {};
+      const careAction = patientDetail?.latest_care_action;
+      const riskDecision = patientDetail?.latest_risk_decision;
+      const dataAnalysis = patientDetail?.latest_data_analysis;
+      const clinicalReasoning = patientDetail?.latest_clinical_reasoning;
+      const monitoringEvent = patientDetail?.latest_monitoring_event;
+
+      // Status helper
+      const isUrgent = careAction?.priority === 'URGENT' || activePatient?.status === 'ALERT';
+      const isElevated = careAction?.priority === 'ELEVATED' || activePatient?.status === 'SURVEILLANCE';
+
+      return (
+        <div className="flex flex-col min-h-screen">
+          {/* 1. Header Bar */}
+          <header className="bg-medCard border-b border-medBorder px-6 py-3 flex items-center justify-between shadow-lg">
+            <div className="flex items-center space-x-4">
+              <div className="h-9 w-9 rounded-lg bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center font-bold text-white shadow-md">
+                CM
+              </div>
+              <div>
+                <h1 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                  CAREMATRIX
+                  <span className="text-xs font-normal text-sky-400 bg-sky-950/60 border border-sky-800/80 px-2 py-0.5 rounded-full">
+                    5-Agent Inpatient Decision Support
+                  </span>
+                </h1>
+                <p className="text-xs text-slate-400">Continuous Inpatient Surveillance & Coordinated Bedside Workflows</p>
+              </div>
+            </div>
+
+            {/* Supervisor & Agent Status Indicator Badges */}
+            <div className="hidden lg:flex items-center space-x-3 bg-medDark/80 px-3 py-1.5 rounded-lg border border-medBorder">
+              <div className="flex items-center space-x-1.5 text-xs">
+                <span className={`h-2.5 w-2.5 rounded-full ${sseConnected ? 'bg-emerald-400 animate-ping' : 'bg-red-500'}`}></span>
+                <span className="font-semibold text-slate-300">Supervisor:</span>
+                <span className="text-emerald-400 font-medium">All 5 Agents Online</span>
+              </div>
+              <div className="h-4 w-px bg-slate-700"></div>
+              <div className="flex items-center space-x-1 text-[11px] text-slate-300">
+                <span className="px-1.5 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800">Monitoring</span>
+                <span>→</span>
+                <span className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800">Risk</span>
+                <span>→</span>
+                <span className="px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800">Analysis</span>
+                <span>→</span>
+                <span className="px-1.5 py-0.5 rounded bg-pink-950 text-pink-300 border border-pink-800">Reasoning</span>
+                <span>→</span>
+                <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold">Coordination</span>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-3">
+              <div className={`text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5 ${
+                activeAlerts.length > 0 ? 'bg-red-500/20 text-red-400 border border-red-500/40 pulse-alert' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+              }`}>
+                <span className={`h-2 w-2 rounded-full ${activeAlerts.length > 0 ? 'bg-red-400' : 'bg-emerald-400'}`}></span>
+                {activeAlerts.length} Active Alert{activeAlerts.length === 1 ? '' : 's'}
+              </div>
+            </div>
+          </header>
+
+          {/* 2. Patient / Bed Strip */}
+          <section className="bg-slate-900 border-b border-medBorder px-6 py-2.5 flex items-center space-x-3 overflow-x-auto">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider pr-2">Monitored Beds:</span>
+            {patients.map(p => {
+              const isSelected = p.patient_id === selectedPid;
+              const hasAlert = p.has_active_alert || p.status === 'ALERT';
+              const isSurveillance = p.status === 'SURVEILLANCE';
+              return (
+                <button
+                  key={p.patient_id}
+                  onClick={() => setSelectedPid(p.patient_id)}
+                  className={`flex items-center space-x-3 px-3.5 py-1.5 rounded-lg border text-left transition-all ${
+                    isSelected
+                      ? 'bg-medCard border-sky-500 shadow-md shadow-sky-500/10'
+                      : 'bg-medDark/60 border-medBorder hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex flex-col">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-bold text-white">{p.name || `Bed ${p.patient_id}`}</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
+                        hasAlert ? 'bg-red-500 text-white animate-pulse' :
+                        isSurveillance ? 'bg-amber-500 text-black' :
+                        'bg-emerald-600/30 text-emerald-400 border border-emerald-500/40'
+                      }`}>
+                        {p.status}
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2 text-[11px] text-slate-400 mt-0.5">
+                      <span>HR: <b className="text-slate-200">{Math.round(p.latest_vitals?.hr || p.latest_vitals?.HR || 0)}</b></span>
+                      <span>MAP: <b className="text-slate-200">{Math.round(p.latest_vitals?.map || p.latest_vitals?.MAP || 0)}</b></span>
+                      <span className="text-slate-500">• {p.scenario}</span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </section>
+
+          {/* 3. Main Operational View */}
+          <main className="flex-1 p-6 space-y-6 max-w-7xl mx-auto w-full">
+
+            {/* A. Top Telemetry Row & Scenario Switcher */}
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+              {/* Vital Sign Cards (3 cols on lg) */}
+              <div className="lg:col-span-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {/* Heart Rate */}
+                <div className={`p-4 rounded-xl border ${
+                  (vitals.hr || vitals.HR) > 105 || (vitals.hr || vitals.HR) < 55
+                    ? 'bg-red-950/40 border-red-700/60 text-red-200'
+                    : 'bg-medCard border-medBorder text-slate-100'
+                }`}>
+                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
+                    <span>HEART RATE</span>
+                    <span className="text-[10px] font-mono text-slate-500">60-100 BPM</span>
+                  </div>
+                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                    <span>{Math.round(vitals.hr || vitals.HR || 0)}</span>
+                    <span className="text-xs font-normal text-slate-400">bpm</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">Telemetry ECG Lead II</div>
+                </div>
+
+                {/* Mean Arterial Pressure */}
+                <div className={`p-4 rounded-xl border ${
+                  (vitals.map || vitals.MAP) < 65
+                    ? 'bg-red-950/40 border-red-700/60 text-red-200'
+                    : 'bg-medCard border-medBorder text-slate-100'
+                }`}>
+                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
+                    <span>MEAN ART PRESSURE</span>
+                    <span className="text-[10px] font-mono text-slate-500">70-105 mmHg</span>
+                  </div>
+                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                    <span>{Math.round(vitals.map || vitals.MAP || 0)}</span>
+                    <span className="text-xs font-normal text-slate-400">mmHg</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">Continuous Arterial Line</div>
+                </div>
+
+                {/* SpO2 */}
+                <div className={`p-4 rounded-xl border ${
+                  (vitals.spo2 || vitals.SpO2) < 92
+                    ? 'bg-red-950/40 border-red-700/60 text-red-200'
+                    : 'bg-medCard border-medBorder text-slate-100'
+                }`}>
+                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
+                    <span>OXYGEN SAT (SpO2)</span>
+                    <span className="text-[10px] font-mono text-slate-500">&gt;=95%</span>
+                  </div>
+                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                    <span>{Math.round(vitals.spo2 || vitals.SpO2 || 0)}%</span>
+                    <span className="text-xs font-normal text-slate-400">pulse ox</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">Plethysmograph Wave</div>
+                </div>
+
+                {/* Resp Rate */}
+                <div className={`p-4 rounded-xl border ${
+                  (vitals.rr || vitals.RR) > 22
+                    ? 'bg-amber-950/40 border-amber-700/60 text-amber-200'
+                    : 'bg-medCard border-medBorder text-slate-100'
+                }`}>
+                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
+                    <span>RESPIRATORY RATE</span>
+                    <span className="text-[10px] font-mono text-slate-500">12-20 /min</span>
+                  </div>
+                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                    <span>{Math.round(vitals.rr || vitals.RR || 0)}</span>
+                    <span className="text-xs font-normal text-slate-400">/min</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">Impedance Pneumography</div>
+                </div>
+              </div>
+
+              {/* Scenario Simulation Controller */}
+              <div className="bg-medCard border border-medBorder p-4 rounded-xl flex flex-col justify-between">
+                <div>
+                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                    <span>Simulation Scenario</span>
+                    <span className="text-[10px] text-sky-400 font-mono">Live Inject</span>
+                  </div>
+                  <p className="text-xs text-slate-300 mt-1">Current: <b className="text-white">{activePatient?.scenario || 'STABLE'}</b></p>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 mt-3">
+                  <button
+                    disabled={triggeringScenario}
+                    onClick={() => handleTriggerScenario('STABLE')}
+                    className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1.5 px-2 rounded font-medium text-slate-200 transition"
+                  >
+                    Stable Normal
+                  </button>
+                  <button
+                    disabled={triggeringScenario}
+                    onClick={() => handleTriggerScenario('GRADUAL_DETERIORATION')}
+                    className="text-[11px] bg-red-950/60 hover:bg-red-900 border border-red-800 py-1.5 px-2 rounded font-medium text-red-300 transition"
+                  >
+                    Sepsis / Deteriorate
+                  </button>
+                  <button
+                    disabled={triggeringScenario}
+                    onClick={() => handleTriggerScenario('SUDDEN_ABNORMALITY')}
+                    className="text-[11px] bg-purple-950/60 hover:bg-purple-900 border border-purple-800 py-1.5 px-2 rounded font-medium text-purple-300 transition"
+                  >
+                    Sudden Shock
+                  </button>
+                  <button
+                    disabled={triggeringScenario}
+                    onClick={() => handleTriggerScenario('RECOVERY')}
+                    className="text-[11px] bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800 py-1.5 px-2 rounded font-medium text-emerald-300 transition"
+                  >
+                    Recovery
+                  </button>
+                  <button
+                    disabled={triggeringScenario}
+                    onClick={() => handleTriggerScenario('NOISY_SENSOR')}
+                    className="text-[11px] bg-amber-950/60 hover:bg-amber-900 border border-amber-800 py-1.5 px-2 rounded font-medium text-amber-300 transition"
+                  >
+                    Noisy Sensor
+                  </button>
+                  <button
+                    disabled={triggeringScenario}
+                    onClick={() => handleTriggerScenario('MISSING_DATA')}
+                    className="text-[11px] bg-slate-900 hover:bg-slate-800 border border-slate-700 py-1.5 px-2 rounded font-medium text-slate-400 transition"
+                  >
+                    Missing Lead
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* B. Live Telemetry Waveform Trend & 5-Agent Architecture Visualizer */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Waveform Chart (7 cols) */}
+              <div className="lg:col-span-7 bg-medCard border border-medBorder rounded-xl p-4 flex flex-col">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="h-2 w-2 rounded-full bg-sky-400 animate-pulse"></span>
+                    <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Continuous Physiological Trend (Rolling 40s)</h3>
+                  </div>
+                  <span className="text-[11px] text-slate-500">Live SSE Stream</span>
+                </div>
+                <div className="flex-1 min-h-[240px] w-full">
+                  <canvas ref={chartRef}></canvas>
+                </div>
+              </div>
+
+              {/* 5-Agent System Pipeline Visualizer (5 cols) */}
+              <div className="lg:col-span-5 bg-medCard border border-medBorder rounded-xl p-4 flex flex-col space-y-3">
+                <div className="flex items-center justify-between border-b border-medBorder pb-2">
+                  <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    Autonomous Multi-Agent Trace
+                  </h3>
+                  <span className="text-[10px] text-emerald-400 font-mono">Autonomous Execution</span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  {/* 1. Monitoring Agent */}
+                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
+                    <span className="px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 font-bold font-mono text-[10px]">1. MONITOR</span>
+                    <div className="flex-1">
+                      <div className="flex justify-between">
+                        <span className="font-semibold text-slate-200">Monitoring Agent</span>
+                        <span className="text-[10px] text-slate-400">{monitoringEvent ? monitoringEvent.event_type : 'surveillance'}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {monitoringEvent ? `Severity: ${monitoringEvent.severity} | Affected: ${monitoringEvent.affected_vitals?.join(', ') || 'none'}` : 'Vitals within baseline limits (Adaptive bypass active)'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 2. Risk Agent */}
+                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
+                    <span className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-400 font-bold font-mono text-[10px]">2. RISK</span>
+                    <div className="flex-1">
+                      <div className="flex justify-between">
+                        <span className="font-semibold text-slate-200">Risk Agent (ML)</span>
+                        <span className={`text-[10px] font-bold ${riskDecision?.decision === 'HIGH_RISK' ? 'text-red-400' : 'text-emerald-400'}`}>
+                          {riskDecision?.risk_level || 'LOW RISK'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        RF Model Probability: <b className="text-slate-200">{riskDecision ? `${(riskDecision.risk_probability * 100).toFixed(1)}%` : '5.2%'}</b> (Threshold: 16.0%)
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 3. Data Analysis Agent */}
+                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
+                    <span className="px-1.5 py-0.5 rounded bg-purple-950 text-purple-400 font-bold font-mono text-[10px]">3. ANALYSIS</span>
+                    <div className="flex-1">
+                      <div className="flex justify-between">
+                        <span className="font-semibold text-slate-200">Data Analysis Agent</span>
+                        <span className="text-[10px] text-slate-400">{dataAnalysis?.evidence_consistency || 'CONSISTENT'}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {dataAnalysis?.pattern_identified?.slice(0, 2).join('; ') || 'Physiological variance stable. Signal fidelity verified.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 4. Clinical Reasoning Agent */}
+                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
+                    <span className="px-1.5 py-0.5 rounded bg-pink-950 text-pink-400 font-bold font-mono text-[10px]">4. REASONING</span>
+                    <div className="flex-1">
+                      <div className="flex justify-between">
+                        <span className="font-semibold text-slate-200">Clinical Reasoning (RAG/LLM)</span>
+                        <span className="text-[10px] text-pink-400 font-semibold">{clinicalReasoning?.priority || 'ROUTINE'}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 mt-0.5 line-clamp-2">
+                        {clinicalReasoning?.clinical_summary || 'Baseline parameters stable. No clinical deterioration detected.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 5. Care Coordination Agent */}
+                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-emerald-900/60 flex items-start space-x-2">
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 font-bold font-mono text-[10px]">5. ACTION</span>
+                    <div className="flex-1">
+                      <div className="flex justify-between">
+                        <span className="font-semibold text-emerald-300">Care Coordination Agent</span>
+                        <span className={`text-[10px] font-bold px-1 rounded ${
+                          careAction?.priority === 'URGENT' ? 'bg-red-500/20 text-red-400' :
+                          careAction?.priority === 'ELEVATED' ? 'bg-amber-500/20 text-amber-300' :
+                          'bg-emerald-500/20 text-emerald-400'
+                        }`}>
+                          {careAction?.priority || 'ROUTINE'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 mt-0.5">
+                        Action: <b className="text-white">{careAction?.action_type || 'CONTINUE_ROUTINE_MONITORING'}</b>
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* C. Bottom Row: Care Coordination Action Plan & Alert Lifecycle Center */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+              {/* Care Coordination Orders & Action Plan (7 cols) */}
+              <div className="lg:col-span-7 bg-medCard border border-medBorder rounded-xl p-5 space-y-4">
+                <div className="flex items-center justify-between border-b border-medBorder pb-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      Care Coordination Action Plan
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                        isUrgent ? 'bg-red-500 text-white' :
+                        isElevated ? 'bg-amber-500 text-black' :
+                        'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                      }`}>
+                        Priority: {careAction?.priority || 'ROUTINE'}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Deterministic non-diagnostic workflow execution & bedside tasking</p>
+                  </div>
+                  {careAction?.clinician_review_required && (
+                    <span className="text-xs bg-red-950/80 border border-red-700 text-red-300 px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-red-400 animate-ping"></span>
+                      Clinician Review Required
+                    </span>
+                  )}
+                </div>
+
+                {/* Escalation Pathway Banner */}
+                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3">
+                  <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Escalation Pathway:</div>
+                  <div className="text-xs font-bold text-sky-400 mt-0.5">
+                    {careAction?.escalation_pathway || 'Standard Continuous Floor/ICU Protocol'}
+                  </div>
+                  <div className="text-xs text-slate-300 mt-1 italic">
+                    Reason: {careAction?.reason || 'Patient physiological indicators within normal limits.'}
+                  </div>
+                </div>
+
+                {/* Suggested Actionable Orders Checklist */}
+                <div>
+                  <div className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center justify-between">
+                    <span>Actionable Order Set:</span>
+                    <span className="text-[10px] text-slate-500">Interactive Clinician Checklist</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {(careAction?.suggested_orders && careAction.suggested_orders.length > 0) ? (
+                      careAction.suggested_orders.map((ord, idx) => {
+                        const isChecked = orderChecked[`${selectedPid}_${idx}`];
+                        return (
+                          <label
+                            key={idx}
+                            className={`flex items-start space-x-2.5 p-2 rounded-lg border text-xs cursor-pointer transition ${
+                              isChecked
+                                ? 'bg-emerald-950/20 border-emerald-800/40 text-slate-400 line-through'
+                                : 'bg-slate-900/80 border-medBorder hover:border-slate-700 text-slate-200'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!isChecked}
+                              onChange={(e) => setOrderChecked(prev => ({
+                                ...prev,
+                                [`${selectedPid}_${idx}`]: e.target.checked
+                              }))}
+                              className="mt-0.5 rounded border-slate-700 bg-slate-800 text-sky-500 focus:ring-sky-500"
+                            />
+                            <span className="flex-1">{ord}</span>
+                          </label>
+                        );
+                      })
+                    ) : (
+                      <div className="text-xs text-slate-400 p-3 bg-slate-900 rounded-lg border border-slate-800">
+                        Maintain continuous standard observation. No active order escalation needed.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Alert Center & Clinician Acknowledgment (5 cols) */}
+              <div className="lg:col-span-5 bg-medCard border border-medBorder rounded-xl p-5 space-y-4 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between border-b border-medBorder pb-3">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      Clinical Alert Center
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
+                        Bed {selectedPid}
+                      </span>
+                    </h3>
+                    <span className="text-[10px] text-slate-400 font-mono">NEW → ACTIVE → ACK → RESOLVED</span>
+                  </div>
+
+                  {/* Active Alerts for this patient */}
+                  <div className="mt-3 space-y-2">
+                    {patientDetail?.active_alerts && patientDetail.active_alerts.length > 0 ? (
+                      patientDetail.active_alerts.map(al => (
+                        <div
+                          key={al.alert_id}
+                          className={`p-3 rounded-lg border flex flex-col space-y-2 ${
+                            al.state === 'NEW' ? 'bg-red-950/50 border-red-700 text-red-100' :
+                            al.state === 'ACTIVE' ? 'bg-amber-950/40 border-amber-700 text-amber-100' :
+                            'bg-slate-900 border-slate-700 text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                              al.state === 'NEW' ? 'bg-red-600 text-white animate-pulse' :
+                              al.state === 'ACTIVE' ? 'bg-amber-600 text-black' :
+                              'bg-sky-600 text-white'
+                            }`}>
+                              [{al.state}] {al.severity}
+                            </span>
+                            <span className="text-[11px] text-slate-400 font-mono">
+                              Duration: {al.duration_seconds}s
+                            </span>
+                          </div>
+
+                          <div className="text-xs">
+                            <span className="font-semibold text-white">Breached: </span>
+                            <span className="text-red-300 font-mono">{al.affected_vitals?.join(', ')}</span>
+                          </div>
+
+                          {al.acknowledged_by ? (
+                            <div className="text-[11px] text-emerald-400 font-medium">
+                              ✓ Acknowledged by {al.acknowledged_by}
+                            </div>
+                          ) : (
+                            <div className="flex items-center space-x-2 pt-1">
+                              <button
+                                onClick={() => handleAcknowledgeAlert(al.alert_id)}
+                                className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-1.5 px-3 rounded text-xs transition shadow"
+                              >
+                                Acknowledge Alert
+                              </button>
+                              <button
+                                onClick={() => handleResolveAlert(al.alert_id)}
+                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-1.5 px-3 rounded text-xs transition"
+                              >
+                                Resolve
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-lg text-center text-xs text-slate-400">
+                        <span className="text-emerald-400 font-semibold block mb-1">✓ No Active Alerts</span>
+                        Physiological parameters within tolerated safe boundaries.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Supervisor Health Footer */}
+                <div className="bg-slate-950/80 p-3 rounded-lg border border-slate-800 text-[11px] text-slate-400">
+                  <div className="flex justify-between items-center">
+                    <span className="font-medium text-slate-300">Supervisor Health:</span>
+                    <span className="text-emerald-400 font-bold font-mono">
+                      {systemHealth?.all_healthy ? "100% HEALTHY" : "DEGRADED"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center mt-1">
+                    <span>Evaluated Observations:</span>
+                    <span className="font-mono text-slate-200">{systemHealth?.runtime_metrics?.total_observations_evaluated || 0}</span>
+                  </div>
+                  <div className="flex justify-between items-center mt-0.5">
+                    <span>Routine Bypassed (Adaptive):</span>
+                    <span className="font-mono text-sky-300">{systemHealth?.runtime_metrics?.routine_bypassed_cycles || 0}</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>

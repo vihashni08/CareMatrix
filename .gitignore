@@ -25,3 +25,9 @@ __pycache__/
 data/processed/*.png
 data/processed/*.csv
 data/raw/
+
+# Generated evaluation and test artifacts
+evaluation_results.json
+.pytest_cache/
+*.db
+*.sqlite3
