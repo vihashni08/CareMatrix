@@ -20,6 +20,8 @@ from flask_cors import CORS
 
 from carematrix_runtime.patient_stream import PatientScenario
 from carematrix_runtime.runtime import CareMatrixRuntime
+from data.adapters.mimic_adapter import MIMICIVAdapter
+from data.adapters.vitaldb_adapter import VitalDBAdapter
 
 # Suppress noisy werkzeug logs in production/demo mode
 log = logging.getLogger("werkzeug")
@@ -111,6 +113,9 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
         """List summary of all monitored inpatient beds."""
         rt: CareMatrixRuntime = app.config["RUNTIME"]
         patients = rt.state_manager.get_patient_summary_list()
+        # Inject data_source for each patient so the dashboard bed strip can badge them
+        for p in patients:
+            p["data_source"] = rt.get_patient_data_source(p["patient_id"])
         return jsonify({
             "total": len(patients),
             "patients": patients,
@@ -124,6 +129,7 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
         detail = rt.state_manager.get_patient_detail(patient_id)
         if detail is None:
             return jsonify({"error": f"Patient {patient_id} not found"}), 404
+        detail["data_source"] = rt.get_patient_data_source(patient_id)
         return jsonify(detail)
 
     @app.route("/api/patients/<int:patient_id>/vitals", methods=["GET"])
@@ -268,6 +274,63 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
             "patient_id": patient_id,
             "scenario": scenario_enum.value,
         })
+
+    # ------------------------------------------------------------------------
+    # Dataset Discovery & Real Patient Loading
+    # ------------------------------------------------------------------------
+    @app.route("/api/datasets", methods=["GET"])
+    def list_datasets():
+        """List available case IDs from VitalDB and MIMIC adapters.
+
+        Returns:
+            { "vitaldb": [0, 4, ...], "mimic": [1001, 1002, ...] }
+        """
+        vitaldb_cases = VitalDBAdapter().list_cases()
+        mimic_cases = MIMICIVAdapter().list_cases()
+        return jsonify({
+            "vitaldb": vitaldb_cases,
+            "mimic": mimic_cases,
+        })
+
+    @app.route("/api/patients/dataset", methods=["POST"])
+    def load_dataset_patient():
+        """Load a real dataset case into the live monitoring pipeline.
+
+        Request body (JSON):
+            { "case_id": <int|str>, "adapter": "vitaldb"|"mimic" }
+
+        Returns:
+            Same shape as GET /api/patients/<id> (with data_source field).
+        """
+        rt: CareMatrixRuntime = app.config["RUNTIME"]
+        data = request.get_json(silent=True) or {}
+
+        case_id_raw = data.get("case_id")
+        adapter_name = data.get("adapter", "vitaldb")
+
+        if case_id_raw is None:
+            return jsonify({"error": "case_id is required"}), 400
+
+        try:
+            case_id = int(case_id_raw)
+        except (TypeError, ValueError):
+            case_id = str(case_id_raw)
+
+        info = rt.add_dataset_patient(case_id=case_id, adapter_name=adapter_name)
+        patient_id = info["patient_id"]
+
+        # Return full patient detail (same shape as GET /api/patients/<id>)
+        detail = rt.state_manager.get_patient_detail(patient_id) or {}
+        detail["data_source"] = info["data_source"]
+        detail["case_id"] = info["case_id"]
+        detail["adapter"] = info["adapter"]
+
+        _broadcast_sse("patient_added", {
+            "patient_id": patient_id,
+            "data_source": info["data_source"],
+        })
+
+        return jsonify(detail), 201
 
     # ------------------------------------------------------------------------
     # Real-Time Server-Sent Events (SSE) Stream

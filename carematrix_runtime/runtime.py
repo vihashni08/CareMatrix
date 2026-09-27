@@ -24,11 +24,14 @@ from carematrix_runtime.alert_manager import AlertManager
 from carematrix_runtime.metrics import SystemMetricsTracker
 from carematrix_runtime.patient_memory import PatientMemory
 from carematrix_runtime.patient_stream import PatientScenario, PatientStreamSimulator
+from carematrix_runtime.replay_stream import PatientStreamReplayer
 from carematrix_runtime.state_manager import PatientStateManager
 from clinical_reasoning_agent import ClinicalReasoningAgent
 from communication.event_log import EventLogWriter
 from communication.event_queue import EventQueue
 from communication.events import CareCoordinationEvent, ClinicalReasoningEvent, MonitoringDecision, MonitoringEvent
+from data.adapters.mimic_adapter import MIMICIVAdapter
+from data.adapters.vitaldb_adapter import VitalDBAdapter
 from data_analysis_agent import DataAnalysisAgent
 from monitoring_agent.monitoring_agent import MonitoringAgent
 from risk_agent.risk_agent import RiskAgent
@@ -150,6 +153,14 @@ class CareMatrixRuntime:
         self._stop_event = threading.Event()
         self._is_running = False
 
+        # Dataset-backed patient tracking:
+        #   { patient_id: {"replayer": PatientStreamReplayer, "data_source": str, "thread": Thread} }
+        self._dataset_sources: dict[int, dict[str, Any]] = {}
+        self._dataset_lock = threading.RLock()
+
+        # Lock protecting self.metrics counter dict from concurrent dataset-patient threads
+        self._metrics_lock = threading.RLock()
+
         # Live subscriber callbacks (e.g. for SSE or WebSockets)
         self._live_listeners: list[Callable[[str, Any], None]] = []
         self._listeners_lock = threading.RLock()
@@ -164,6 +175,180 @@ class CareMatrixRuntime:
         with self._listeners_lock:
             if listener in self._live_listeners:
                 self._live_listeners.remove(listener)
+
+    def add_dataset_patient(self, case_id: int | str, adapter_name: str = "vitaldb") -> dict[str, Any]:
+        """Load a real dataset case and stream its observations through the agent pipeline.
+
+        If a patient with the same adapter+case_id is already running, returns the existing
+        patient_id rather than spawning a duplicate thread.
+
+        The new patient is assigned a unique patient_id >= 200 (to avoid colliding with
+        simulated beds 101-103), registered with the state manager, and streamed in a
+        dedicated background thread paced at self.stream_interval seconds per observation
+        (matching the simulated patient loop).
+
+        Args:
+            case_id: Case identifier understood by the selected adapter.
+            adapter_name: "vitaldb" (default) or "mimic".
+
+        Returns:
+            A dict with patient_id, case_id, adapter, data_source, and name — the same shape
+            returned by GET /api/patients/<id>, augmented with data_source.
+        """
+        adapter_name_lower = adapter_name.lower()
+        case_id_int = int(case_id) if str(case_id).isdigit() else case_id
+
+        # Duplicate guard: return existing bed if same (adapter, case_id) already running
+        with self._dataset_lock:
+            for pid, entry in self._dataset_sources.items():
+                if entry["adapter_name"] == adapter_name_lower and entry["case_id"] == case_id_int:
+                    if self.verbose:
+                        print(_format_log("Runtime", "DATASET", f"Case {case_id} already running as patient {pid} — reusing."))
+                    return {
+                        "patient_id": pid,
+                        "case_id": entry["case_id"],
+                        "adapter": adapter_name_lower,
+                        "data_source": entry["data_source"],
+                        "name": self.state_manager.get_or_create(pid).name,
+                    }
+
+        if adapter_name_lower in ("mimic", "mimic-iv", "mimic_iv"):
+            adapter = MIMICIVAdapter()
+            source_label = f"MIMIC-IV:case_{case_id}"
+        else:
+            adapter = VitalDBAdapter()
+            source_label = f"VitalDB:case_{case_id}"
+
+        # Pace observations at the same interval as the simulated patient loop
+        replayer = PatientStreamReplayer(
+            case_id=case_id,
+            adapter=adapter,
+            loop=True,
+            delay_seconds=self.stream_interval,  # one observation per stream_interval seconds
+        )
+
+        # Assign a unique patient_id in the 200+ range, avoiding collisions
+        with self._dataset_lock:
+            existing_ids = set(self._dataset_sources.keys())
+            new_pid = max(existing_ids, default=199) + 1
+
+            bed_name = f"Bed {new_pid} ({source_label})"
+            self.state_manager.get_or_create(new_pid, name=bed_name)
+
+            entry: dict[str, Any] = {
+                "replayer": replayer,
+                "data_source": source_label,
+                "case_id": case_id_int,
+                "adapter_name": adapter_name_lower,
+                "thread": None,
+            }
+            self._dataset_sources[new_pid] = entry
+
+        if self.verbose:
+            print(_format_log("Runtime", "DATASET", f"Patient {new_pid} loaded from {source_label}"))
+
+        # Start background streaming thread if runtime is already running
+        if self._is_running:
+            t = threading.Thread(
+                target=self._dataset_stream_loop,
+                args=(new_pid,),
+                name=f"CareMatrix-Dataset-{new_pid}",
+                daemon=True,
+            )
+            with self._dataset_lock:
+                self._dataset_sources[new_pid]["thread"] = t
+            t.start()
+
+        return {
+            "patient_id": new_pid,
+            "case_id": entry["case_id"],
+            "adapter": adapter_name_lower,
+            "data_source": source_label,
+            "name": bed_name,
+        }
+
+    def _dataset_stream_loop(self, patient_id: int) -> None:
+        """Background thread: feeds one dataset observation per stream_interval into the pipeline.
+
+        The replayer's delay_seconds already paces one row per stream_interval; this loop
+        does not add an additional sleep. Exceptions are caught, logged, and reflected in the
+        patient's data_source label so the dashboard shows the failure rather than silently
+        going stale.
+        """
+        with self._dataset_lock:
+            entry = self._dataset_sources.get(patient_id)
+        if entry is None:
+            return
+        replayer: PatientStreamReplayer = entry["replayer"]
+        data_source: str = entry["data_source"]
+        case_id = entry["case_id"]
+
+        try:
+            for sample in replayer.stream():
+                if self._stop_event.is_set():
+                    break
+                # Augment sample with patient_id, case_id, and data_source so downstream agents
+                # treat it identically to a simulated observation
+                obs: dict[str, Any] = dict(sample)
+                obs["patient_id"] = patient_id
+                obs["case_id"] = case_id
+                obs["data_source"] = data_source
+
+                self.state_manager.record_observation(obs)
+                self.metrics_tracker.record_observation(patient_id)
+                with self._metrics_lock:
+                    self.metrics["total_observations_evaluated"] += 1
+
+                t0 = time.time()
+                decision, transition = self.monitoring_agent.observe(obs)
+                self.metrics_tracker.record_agent_execution("MonitoringAgent", max(0.0001, time.time() - t0), success=True)
+
+                if decision == MonitoringDecision.CONTINUE_MONITORING:
+                    with self._metrics_lock:
+                        self.metrics["routine_bypassed_cycles"] += 1
+                    self.metrics_tracker.record_adaptive_decision(bypassed=True)
+                elif decision == MonitoringDecision.ESCALATE_TO_RISK:
+                    with self._metrics_lock:
+                        self.metrics["escalated_cycles"] += 1
+                    self.metrics_tracker.record_adaptive_decision(bypassed=False)
+                    if self.verbose:
+                        print(_format_log(
+                            "Runtime", "ADAPTIVE",
+                            f"Dataset patient {patient_id} triggered escalation -> downstream pipeline activated.",
+                        ))
+                elif decision == MonitoringDecision.RECOVERY:
+                    with self._metrics_lock:
+                        self.metrics["recoveries_detected"] += 1
+                    self.metrics_tracker.record_monitoring_event("recovery", persistent=False)
+                    self.metrics_tracker.record_alert_resolution()
+                    self.alert_manager.resolve_patient_alerts(patient_id, reason="Patient physiological stabilization")
+                    self.care_coordination_agent.handle_recovery(patient_id)
+
+                # Broadcast observation to live (SSE) listeners
+                with self._listeners_lock:
+                    listeners = list(self._live_listeners)
+                for cb in listeners:
+                    try:
+                        cb("observation", obs)
+                    except Exception:
+                        pass
+
+                # Pacing is handled by replayer.delay_seconds — no additional sleep here.
+
+        except Exception as exc:
+            # Log failure visibly rather than silently dying
+            error_label = f"{data_source} (stream error)"
+            print(_format_log("Runtime", "DATASET_ERR", f"Patient {patient_id} stream failed: {exc!r} — marking as '{error_label}'"))
+            with self._dataset_lock:
+                if patient_id in self._dataset_sources:
+                    self._dataset_sources[patient_id]["data_source"] = error_label
+            # Update state manager name so the dashboard reflects the error
+            try:
+                record = self.state_manager.get_or_create(patient_id)
+                with record._lock:
+                    record.status = "STABLE"  # don't escalate; just stop streaming
+            except Exception:
+                pass
 
     def _on_event_published(self, topic: str, event: Any) -> None:
         """Internal callback invoked whenever any agent publishes to the queue."""
@@ -231,7 +416,8 @@ class CareMatrixRuntime:
             obs = self.simulator.generate_observation(patient_id)
             self.state_manager.record_observation(obs)
             self.metrics_tracker.record_observation(patient_id)
-            self.metrics["total_observations_evaluated"] += 1
+            with self._metrics_lock:
+                self.metrics["total_observations_evaluated"] += 1
 
             # 2. Gatekeeper: Monitoring Agent evaluates observation
             t0 = time.time()
@@ -241,12 +427,14 @@ class CareMatrixRuntime:
             # 3. Adaptive Execution Logic
             if decision == MonitoringDecision.CONTINUE_MONITORING:
                 # Routine stable observation: bypass downstream ML, Analysis, Reasoning, Coordination
-                self.metrics["routine_bypassed_cycles"] += 1
+                with self._metrics_lock:
+                    self.metrics["routine_bypassed_cycles"] += 1
                 self.metrics_tracker.record_adaptive_decision(bypassed=True)
 
             elif decision == MonitoringDecision.ESCALATE_TO_RISK:
                 # Meaningful abnormality detected: execute downstream pipeline
-                self.metrics["escalated_cycles"] += 1
+                with self._metrics_lock:
+                    self.metrics["escalated_cycles"] += 1
                 self.metrics_tracker.record_adaptive_decision(bypassed=False)
                 if self.verbose:
                     print(_format_log(
@@ -256,7 +444,8 @@ class CareMatrixRuntime:
                     ))
 
             elif decision == MonitoringDecision.RECOVERY:
-                self.metrics["recoveries_detected"] += 1
+                with self._metrics_lock:
+                    self.metrics["recoveries_detected"] += 1
                 self.metrics_tracker.record_monitoring_event("recovery", persistent=False)
                 self.metrics_tracker.record_alert_resolution()
                 self.alert_manager.resolve_patient_alerts(patient_id, reason="Patient physiological stabilization")
@@ -307,6 +496,20 @@ class CareMatrixRuntime:
         )
         self._stream_thread.start()
 
+        # Start any dataset patient streaming threads registered before start()
+        with self._dataset_lock:
+            pending = [(pid, e) for pid, e in self._dataset_sources.items() if e.get("thread") is None]
+        for pid, entry in pending:
+            t = threading.Thread(
+                target=self._dataset_stream_loop,
+                args=(pid,),
+                name=f"CareMatrix-Dataset-{pid}",
+                daemon=True,
+            )
+            with self._dataset_lock:
+                self._dataset_sources[pid]["thread"] = t
+            t.start()
+
         if self.verbose:
             print(_format_log("Runtime", "STARTED", "All 5 agents + stream simulator online."))
 
@@ -329,6 +532,11 @@ class CareMatrixRuntime:
         # Stop stream
         if self._stream_thread is not None:
             self._stream_thread.join(timeout=1.0)
+
+        # Stop all dataset-backed replayers (their threads check _stop_event)
+        with self._dataset_lock:
+            for entry in self._dataset_sources.values():
+                entry["replayer"].stop()
 
         # Stop agents and supervisor
         self.monitoring_agent.stop()
@@ -356,14 +564,24 @@ class CareMatrixRuntime:
     def get_system_status(self) -> dict[str, Any]:
         """Return comprehensive system health, pipeline metrics, and bed summaries."""
         health = self.supervisor.get_system_health_snapshot()
+        with self._metrics_lock:
+            metrics_snapshot = dict(self.metrics)
         return {
             "runtime_running": self._is_running,
-            "metrics": dict(self.metrics),
+            "metrics": metrics_snapshot,
             "supervisor": health,
             "patients": self.state_manager.get_patient_summary_list(),
             "active_alerts": self.alert_manager.get_active_alerts(),
             "alert_history_count": len(self.alert_manager._alert_history),
         }
+
+    def get_patient_data_source(self, patient_id: int) -> str:
+        """Return the data_source label for a patient, or 'simulated' if simulator-backed."""
+        with self._dataset_lock:
+            entry = self._dataset_sources.get(patient_id)
+        if entry is not None:
+            return entry["data_source"]
+        return "simulated"
 
 
 __all__ = [

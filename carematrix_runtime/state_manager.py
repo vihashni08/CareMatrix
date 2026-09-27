@@ -198,7 +198,7 @@ class PatientStateManager:
     def get_patient_summary_list(self) -> list[dict[str, Any]]:
         with self._lock:
             summaries = []
-            for pid, p in self._patients.items():
+            for pid, p in list(self._patients.items()):
                 active_alerts = self.alert_manager.get_active_alerts(patient_id=pid)
                 summaries.append(p.to_summary_dict(active_alerts=active_alerts))
             return summaries

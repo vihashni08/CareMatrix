@@ -62,6 +62,13 @@
       const [orderChecked, setOrderChecked] = useState({});
       const [triggeringScenario, setTriggeringScenario] = useState(false);
 
+      // Dataset-backed patient loading state
+      const [availableDatasets, setAvailableDatasets] = useState({ vitaldb: [], mimic: [] });
+      const [selectedAdapter, setSelectedAdapter] = useState('vitaldb');
+      const [selectedCaseId, setSelectedCaseId] = useState('');
+      const [loadingDataset, setLoadingDataset] = useState(false);
+      const [datasetLoadMsg, setDatasetLoadMsg] = useState('');
+
       const chartRef = useRef(null);
       const chartInstance = useRef(null);
 
@@ -105,9 +112,25 @@
         }
       };
 
+      const fetchDatasets = async () => {
+        try {
+          const res = await fetch('/api/datasets');
+          if (res.ok) {
+            const data = await res.json();
+            setAvailableDatasets(data);
+            // Pre-select first VitalDB case if available
+            const cases = data.vitaldb || [];
+            if (cases.length > 0 && !selectedCaseId) setSelectedCaseId(String(cases[0]));
+          }
+        } catch (e) {
+          console.error("Error fetching datasets:", e);
+        }
+      };
+
       useEffect(() => {
         refreshPatientsList();
         refreshPatientDetail(selectedPid);
+        fetchDatasets();
       }, [selectedPid]);
 
       // Connect to Server-Sent Events (SSE)
@@ -293,6 +316,35 @@
         }
       };
 
+      const handleLoadDatasetPatient = async () => {
+        if (!selectedCaseId) return;
+        setLoadingDataset(true);
+        setDatasetLoadMsg('');
+        try {
+          const res = await fetch('/api/patients/dataset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ case_id: parseInt(selectedCaseId, 10) || selectedCaseId, adapter: selectedAdapter })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setDatasetLoadMsg(`✓ Loaded ${data.data_source || 'dataset patient'} as Bed ${data.patient_id}`);
+            setTimeout(() => {
+              refreshPatientsList();
+              setDatasetLoadMsg('');
+            }, 2000);
+          } else {
+            const err = await res.json();
+            setDatasetLoadMsg(`Error: ${err.error || 'Failed to load'}`);
+          }
+        } catch (e) {
+          setDatasetLoadMsg('Network error loading dataset patient');
+          console.error(e);
+        } finally {
+          setLoadingDataset(false);
+        }
+      };
+
       const handleTriggerScenario = async (scenario) => {
         setTriggeringScenario(true);
         try {
@@ -407,6 +459,15 @@
                       <span>MAP: <b className="text-slate-200">{Math.round(p.latest_vitals?.map || p.latest_vitals?.MAP || 0)}</b></span>
                       <span className="text-slate-500">• {p.scenario}</span>
                     </div>
+                    {(p.data_source && p.data_source !== 'simulated') ? (
+                      <span className="text-[9px] mt-0.5 px-1.5 py-0.5 rounded bg-teal-900/60 text-teal-300 border border-teal-700/50 font-mono self-start">
+                        {p.data_source}
+                      </span>
+                    ) : (
+                      <span className="text-[9px] mt-0.5 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-500 border border-slate-700/30 font-mono self-start">
+                        SIMULATED
+                      </span>
+                    )}
                   </div>
                 </button>
               );
@@ -416,8 +477,8 @@
           {/* 3. Main Operational View */}
           <main className="flex-1 p-6 space-y-6 max-w-7xl mx-auto w-full">
 
-            {/* A. Top Telemetry Row & Scenario Switcher */}
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            {/* A. Top Telemetry Row, Scenario Switcher & Dataset Loader */}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
               {/* Vital Sign Cards (3 cols on lg) */}
               <div className="lg:col-span-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {/* Heart Rate */}
@@ -541,6 +602,52 @@
                   >
                     Missing Lead
                   </button>
+                </div>
+              </div>
+
+              {/* Load Real Patient Case */}
+              <div className="bg-medCard border border-teal-800/50 p-4 rounded-xl flex flex-col justify-between">
+                <div>
+                  <div className="text-xs font-bold text-teal-400 uppercase tracking-wider flex items-center justify-between">
+                    <span>Real Patient Data</span>
+                    <span className="text-[10px] text-teal-500 font-mono">Dataset</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">Load from VitalDB or MIMIC-IV</p>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <select
+                    value={selectedAdapter}
+                    onChange={(e) => {
+                      setSelectedAdapter(e.target.value);
+                      const cases = availableDatasets[e.target.value] || [];
+                      setSelectedCaseId(cases.length > 0 ? String(cases[0]) : '');
+                    }}
+                    className="w-full text-[11px] bg-slate-800 border border-slate-700 text-slate-200 py-1.5 px-2 rounded"
+                  >
+                    <option value="vitaldb">VitalDB</option>
+                    <option value="mimic">MIMIC-IV</option>
+                  </select>
+                  <select
+                    value={selectedCaseId}
+                    onChange={(e) => setSelectedCaseId(e.target.value)}
+                    className="w-full text-[11px] bg-slate-800 border border-slate-700 text-slate-200 py-1.5 px-2 rounded"
+                  >
+                    {(availableDatasets[selectedAdapter] || []).map(cid => (
+                      <option key={cid} value={String(cid)}>Case {cid}</option>
+                    ))}
+                  </select>
+                  <button
+                    disabled={loadingDataset || !selectedCaseId}
+                    onClick={handleLoadDatasetPatient}
+                    className="w-full text-[11px] bg-teal-900 hover:bg-teal-800 border border-teal-700 py-1.5 px-2 rounded font-medium text-teal-200 transition disabled:opacity-50"
+                  >
+                    {loadingDataset ? 'Loading...' : 'Load Patient Case'}
+                  </button>
+                  {datasetLoadMsg && (
+                    <p className={`text-[10px] font-medium ${datasetLoadMsg.startsWith('✓') ? 'text-teal-400' : 'text-red-400'}`}>
+                      {datasetLoadMsg}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

@@ -120,18 +120,22 @@ class MonitoringAgent:
         self.decision_engines: dict[int, MonitoringDecisionEngine] = {
             self.case_id: self.decision_engine
         }
+        # RLock protecting patient_states and decision_engines dict mutations so that
+        # concurrent dataset-patient threads don't race on get_or_create_patient().
+        self._patient_state_lock = threading.RLock()
 
         self.lifecycle_state = AgentLifecycleState.RUNNING
 
     def get_or_create_patient(self, pid: int) -> tuple[PatientMonitoringState, MonitoringDecisionEngine]:
         """Retrieve or create an isolated monitoring state and decision engine for a patient."""
-        if pid not in self.patient_states:
-            self.patient_states[pid] = PatientMonitoringState(case_id=pid)
-            self.decision_engines[pid] = MonitoringDecisionEngine(
-                cooldown_seconds=self.cooldown_seconds,
-                recovery_duration_seconds=self.recovery_duration,
-            )
-        return self.patient_states[pid], self.decision_engines[pid]
+        with self._patient_state_lock:
+            if pid not in self.patient_states:
+                self.patient_states[pid] = PatientMonitoringState(case_id=pid)
+                self.decision_engines[pid] = MonitoringDecisionEngine(
+                    cooldown_seconds=self.cooldown_seconds,
+                    recovery_duration_seconds=self.recovery_duration,
+                )
+            return self.patient_states[pid], self.decision_engines[pid]
 
     # ------------------------------------------------------------------------
     # State & Fault Tolerance
