@@ -9,6 +9,50 @@ from __future__ import annotations
 from typing import Any
 
 
+def is_high_risk_case(
+    decision: str | None = None,
+    probability: float | None = None,
+    severity: str | None = None,
+) -> bool:
+    """Evaluate whether a case meets the shared high-risk definition.
+
+    Shared between DataAnalysis requirements and ClinicalReasoning evidence retrieval gating:
+    True if decision is HIGH_RISK, OR probability >= 0.16, OR severity in (severe, critical).
+    Fails safe to True if decision is missing, empty, or unparseable.
+    """
+    if decision is None and probability is None and severity is None:
+        return True
+
+    if decision is not None:
+        d_str = str(decision).strip().upper().replace(" ", "_")
+        if not d_str:
+            return True
+        if d_str in ("HIGH_RISK", "HIGH"):
+            return True
+        if d_str not in ("LOW_RISK", "LOW", "MODERATE", "MEDIUM", "INDETERMINATE"):
+            # Unparseable / unrecognized risk string -> fail safe to True
+            return True
+
+    if probability is not None:
+        try:
+            if float(probability) >= 0.16:
+                return True
+        except (ValueError, TypeError):
+            pass
+
+    if severity is not None:
+        s_str = str(severity).strip().lower()
+        if s_str in ("severe", "critical"):
+            return True
+
+    if decision is not None:
+        d_str = str(decision).strip().upper().replace(" ", "_")
+        if d_str in ("LOW_RISK", "LOW"):
+            return False
+
+    return False
+
+
 def determine_analysis_requirements(
     decision: str,
     probability: float,
@@ -20,10 +64,7 @@ def determine_analysis_requirements(
     Returns:
         (analysis_level, requested_checks, verification_required)
     """
-    is_high_risk = decision in ("HIGH_RISK", "HIGH RISK") or probability >= 0.16
-    is_severe = severity.lower() in ("severe", "critical")
-
-    if is_high_risk or is_severe:
+    if is_high_risk_case(decision, probability, severity):
         analysis_level = "detailed"
         requested_checks = ["trends", "variability", "patterns", "verification"]
         verification_required = True
@@ -143,6 +184,7 @@ def verify_cross_agent_consistency(
 
 
 __all__ = [
+    "is_high_risk_case",
     "determine_analysis_requirements",
     "verify_cross_agent_consistency",
 ]

@@ -18,11 +18,15 @@ from communication.events import (
     DataAnalysisEvent,
     PerformativeType,
 )
+from communication.orchestration import is_high_risk_case
 from clinical_reasoning_agent.llm_reasoner import (
     GeminiClinicalReasoner,
     LLMReasonerError,
 )
-from clinical_reasoning_agent.prompt_builder import build_evidence_package
+from clinical_reasoning_agent.prompt_builder import (
+    build_evidence_package,
+    build_reasoning_prompt,
+)
 from clinical_reasoning_agent.rag import MedicalRetriever
 from clinical_reasoning_agent.reasoning import ClinicalReasoningEngine
 from clinical_reasoning_agent.schemas import (
@@ -30,6 +34,8 @@ from clinical_reasoning_agent.schemas import (
     ReasoningMode,
 )
 from clinical_reasoning_agent.state import ClinicalReasoningState
+
+RETRIEVAL_CONFIDENCE_THRESHOLD: float = 0.80
 
 
 def _format_log(name: str, action: str, details: str) -> str:
@@ -55,6 +61,7 @@ class ClinicalReasoningAgent:
         enable_llm: bool = True,
         enable_rag: bool = True,
         patient_memory: Any | None = None,
+        retrieval_confidence_threshold: float = RETRIEVAL_CONFIDENCE_THRESHOLD,
     ):
         self.name = name
         self.event_queue = event_queue
@@ -62,6 +69,7 @@ class ClinicalReasoningAgent:
         self.enable_llm = enable_llm
         self.enable_rag = enable_rag
         self.patient_memory = patient_memory
+        self.retrieval_confidence_threshold = float(retrieval_confidence_threshold)
         self.llm_reasoner = llm_reasoner or GeminiClinicalReasoner()
         self.retriever = retriever if retriever is not None else MedicalRetriever()
         self.reasoning_engine = ClinicalReasoningEngine()
@@ -112,27 +120,92 @@ class ClinicalReasoningAgent:
             # 2. GATHER EVIDENCE & REASON (DETERMINISTIC SAFETY BASELINE)
             deterministic_out = self.reasoning_engine.evaluate(event=event, state=state)
 
-            # 3. MEDICAL RAG: Retrieve Relevant Authoritative Guidance
+            # 3. MEDICAL RAG: Retrieve Relevant Authoritative Guidance (Risk-Gated)
             retrieval_result = None
-            if self.enable_rag and self.retriever is not None:
+            evidence_retrieval_status = "SKIPPED_LOW_RISK_CONFIDENT"
+            evidence_retrieval_reason = ""
+
+            # Fail-safe defaulting for missing/empty fields:
+            # - Missing/empty risk_level -> is_high_risk_case treats as True
+            # - Missing evidence_consistency -> "UNCERTAIN"
+            # - Missing confidence -> 0.0
+            consistency_raw = getattr(event, "evidence_consistency", None)
+            if consistency_raw is None and hasattr(event, "metadata") and isinstance(event.metadata, dict):
+                consistency_raw = event.metadata.get("evidence_consistency")
+            consistency = str(consistency_raw).strip().upper() if consistency_raw is not None and str(consistency_raw).strip() != "" else "UNCERTAIN"
+
+            confidence_raw = getattr(event, "confidence", None)
+            if confidence_raw is None and hasattr(event, "metadata") and isinstance(event.metadata, dict):
+                confidence_raw = event.metadata.get("confidence")
+            try:
+                confidence = float(confidence_raw) if confidence_raw is not None else 0.0
+            except (ValueError, TypeError):
+                confidence = 0.0
+
+            prob_raw = getattr(event, "probability", None)
+            if prob_raw is None and hasattr(event, "metadata") and isinstance(event.metadata, dict):
+                prob_raw = event.metadata.get("probability")
+            try:
+                prob = float(prob_raw) if prob_raw is not None else None
+            except (ValueError, TypeError):
+                prob = None
+
+            sev_raw = getattr(event, "severity", None)
+            if sev_raw is None and hasattr(event, "metadata") and isinstance(event.metadata, dict):
+                sev_raw = event.metadata.get("severity")
+
+            high_risk = is_high_risk_case(decision=risk_level, probability=prob, severity=sev_raw)
+
+            if high_risk:
+                should_retrieve = True
+                evidence_retrieval_status = "RUN_HIGH_RISK"
+                evidence_retrieval_reason = f"High-risk clinical trajectory (risk={risk_level}): authoritative guidance required."
+            elif consistency in ("CONFLICTING", "UNCERTAIN"):
+                should_retrieve = True
+                evidence_retrieval_status = "RUN_CONFIDENCE_ESCALATION"
+                evidence_retrieval_reason = f"Low-risk case escalated due to {consistency} cross-agent evidence alignment."
+            elif confidence < self.retrieval_confidence_threshold:
+                should_retrieve = True
+                evidence_retrieval_status = "RUN_CONFIDENCE_ESCALATION"
+                evidence_retrieval_reason = (
+                    f"Low-risk case escalated due to low cross-agent confidence "
+                    f"({confidence:.2f} < {self.retrieval_confidence_threshold:.2f})."
+                )
+            else:
+                should_retrieve = False
+                evidence_retrieval_status = "SKIPPED_LOW_RISK_CONFIDENT"
+                evidence_retrieval_reason = (
+                    f"Low-risk case with confident, supporting consistency ({confidence:.2f}): RAG skipped."
+                )
+
+            if should_retrieve and self.enable_rag and self.retriever is not None:
                 try:
                     retrieval_result = self.retriever.retrieve(event)
                     if self.verbose and retrieval_result.has_evidence:
-                        print(_format_log(self.name, "RAG_RETRIEVE", f"Found {len(retrieval_result.passages)} guidelines (score: {retrieval_result.top_score:.2f})"))
+                        print(_format_log(self.name, "RAG_RETRIEVE", f"Found {len(retrieval_result.passages)} guidelines (score: {retrieval_result.top_score:.2f}) [{evidence_retrieval_status}]"))
                 except Exception as rag_exc:
                     if self.verbose:
                         print(_format_log(self.name, "RAG_ERROR", f"Retrieval failed: {rag_exc}"))
                     retrieval_result = None
+            elif not should_retrieve:
+                if self.verbose:
+                    print(_format_log(self.name, "RAG_SKIPPED", evidence_retrieval_reason))
 
             # 4. INVOKE REASONING CAPABILITY (LLM TOOL WITH RAG CONTEXT)
             llm_result = None
             fallback_error = None
 
+            evidence_package = build_evidence_package(event, state, patient_memory=self.patient_memory)
+            prompt_len = len(build_reasoning_prompt(evidence_package, retrieval_result))
+            if retrieval_result and retrieval_result.has_evidence:
+                prompt_diff = prompt_len - len(build_reasoning_prompt(evidence_package, None))
+            else:
+                prompt_diff = 0
+
             if self.enable_llm and self.llm_reasoner.is_available:
                 try:
                     if self.verbose:
                         print(_format_log(self.name, "LLM_INVOKE", f"Invoking Gemini reasoner for {event_id}"))
-                    evidence_package = build_evidence_package(event, state, patient_memory=self.patient_memory)
                     llm_result = self.llm_reasoner.reason(evidence_package, retrieval_result=retrieval_result)
                     if self.verbose:
                         print(_format_log(self.name, "LLM_SUCCESS", f"Gemini reasoning completed: priority={llm_result.priority}"))
@@ -222,6 +295,10 @@ class ClinicalReasoningAgent:
                     "knowledge_sources": out.knowledge_sources,
                     "retrieved_evidence": out.retrieved_evidence,
                     "retrieval_status": out.retrieval_status,
+                    "evidence_retrieval": evidence_retrieval_status,
+                    "evidence_retrieval_reason": evidence_retrieval_reason,
+                    "prompt_length_chars": prompt_len,
+                    "prompt_diff_chars": prompt_diff,
                     **({"negotiation_trace": negotiation_trace} if negotiation_trace else {}),
                 },
                 performative=PerformativeType.INFORM.value,
@@ -266,6 +343,8 @@ class ClinicalReasoningAgent:
                 metadata={
                     "error": str(exc),
                     "reasoning_mode": ReasoningMode.LLM_FALLBACK.value,
+                    "evidence_retrieval": evidence_retrieval_status if "evidence_retrieval_status" in locals() else "RUN_HIGH_RISK",
+                    "evidence_retrieval_reason": evidence_retrieval_reason if "evidence_retrieval_reason" in locals() else str(exc),
                 },
             )
             state.record_assessment(event_id, timestamp, priority, risk_level, summary, result.findings, actions)
@@ -332,4 +411,5 @@ __all__ = [
     "ClinicalReasoningEvent",
     "ClinicalReasoningPriority",
     "ClinicalReasoningState",
+    "RETRIEVAL_CONFIDENCE_THRESHOLD",
 ]
