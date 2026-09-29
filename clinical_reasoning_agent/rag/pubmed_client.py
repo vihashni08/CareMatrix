@@ -12,6 +12,7 @@ Environment variables (both optional):
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -66,10 +67,32 @@ def clear_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Environment loader
+# ---------------------------------------------------------------------------
+def _load_env_if_needed() -> None:
+    """Load NCBI settings from .env file if not already present in environment."""
+    try:
+        root = Path(__file__).resolve().parent.parent.parent
+        env_path = root / ".env"
+        if env_path.is_file():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    val = val.strip()
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # NCBI base parameters
 # ---------------------------------------------------------------------------
 def _ncbi_params() -> dict[str, str]:
     """Return base parameters required by every NCBI E-utilities request."""
+    _load_env_if_needed()
     params: dict[str, str] = {"tool": _TOOL_NAME}
     api_key = os.environ.get("NCBI_API_KEY", "").strip()
     if api_key:
