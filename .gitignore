@@ -20,6 +20,7 @@ __pycache__/
 # Environment variables / secrets
 .env
 .env.*
+!.env.example
 
 # Generated monitoring outputs
 data/processed/*.png
