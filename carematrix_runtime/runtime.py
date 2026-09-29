@@ -19,6 +19,9 @@ import threading
 import time
 from typing import Any, Callable
 
+import numpy as np
+import pandas as pd
+
 from care_coordination_agent import CareCoordinationAgent
 from carematrix_runtime.alert_manager import AlertManager
 from carematrix_runtime.metrics import SystemMetricsTracker
@@ -107,9 +110,11 @@ class CareMatrixRuntime:
             event_queue=self.event_queue,
             verbose=self.verbose,
             enable_llm=self.enable_llm_reasoning,
+            window_provider=self.provide_analysis_window,
         )
         self.data_analysis_agent = DataAnalysisAgent(
             event_queue=self.event_queue,
+            data_loader=self.provide_analysis_window,
             verbose=self.verbose,
         )
         self.clinical_reasoning_agent = ClinicalReasoningAgent(
@@ -164,6 +169,59 @@ class CareMatrixRuntime:
         # Live subscriber callbacks (e.g. for SSE or WebSockets)
         self._live_listeners: list[Callable[[str, Any], None]] = []
         self._listeners_lock = threading.RLock()
+
+    def provide_analysis_window(self, case_id: int | str) -> pd.DataFrame:
+        """Provide rolling buffered window dataframe for DataAnalysisAgent and RiskAgent.
+
+        Retrieves recent observations from the MonitoringAgent's rolling buffer for the patient.
+        Returns a DataFrame with Time and standard physiological columns (last 300s / 60 samples).
+        """
+        pid = int(case_id) if str(case_id).isdigit() else case_id
+        target_pid = None
+
+        with self.monitoring_agent._patient_state_lock:
+            if pid in self.monitoring_agent.patient_states:
+                target_pid = pid
+            else:
+                with self._dataset_lock:
+                    for d_pid, entry in self._dataset_sources.items():
+                        if entry.get("case_id") == pid:
+                            target_pid = d_pid
+                            break
+                if target_pid is None and getattr(self.monitoring_agent, "case_id", None) == pid:
+                    target_pid = pid
+
+            p_state = self.monitoring_agent.patient_states.get(target_pid) if target_pid is not None else None
+            if p_state is None:
+                p_state = getattr(self.monitoring_agent, "state", None)
+
+            if p_state is None or not p_state.raw_buffer:
+                return pd.DataFrame(columns=["Time", "HR", "SpO2", "RR", "SBP", "DBP", "MAP", "BT"])
+
+            records = list(p_state.raw_buffer)
+
+        df = pd.DataFrame(records)
+        if "Time" not in df.columns:
+            if "timestamp" in df.columns:
+                df["Time"] = df["timestamp"]
+            else:
+                df.insert(0, "Time", np.arange(len(df)) * 5.0)
+
+        for vital in ["HR", "SpO2", "RR", "SBP", "DBP", "MAP", "BT"]:
+            if vital not in df.columns:
+                df[vital] = np.nan
+            else:
+                df[vital] = pd.to_numeric(df[vital], errors="coerce")
+
+        df["Time"] = pd.to_numeric(df["Time"], errors="coerce")
+        df = df.dropna(subset=["Time"])
+
+        if not df.empty and len(df) > 60:
+            latest_t = df["Time"].iloc[-1]
+            df = df[df["Time"] >= latest_t - 300.0]
+            if len(df) > 60:
+                df = df.iloc[-60:]
+        return df
 
     def add_live_listener(self, listener: Callable[[str, Any], None]) -> None:
         """Register live listener for real-time dashboard push updates."""

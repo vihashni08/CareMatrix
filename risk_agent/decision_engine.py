@@ -34,6 +34,7 @@ class RiskDecisionEngine:
         threshold: float,
         model_name: str,
         features: dict[str, float],
+        metadata: dict[str, Any] | None = None,
     ) -> RiskDecisionEvent:
         """Formulate an explicit decision based on ML model probability vs threshold."""
         vitals_str = ", ".join(event.affected_vitals)
@@ -64,6 +65,8 @@ class RiskDecisionEngine:
             affected_vitals=event.affected_vitals,
         )
 
+        event_metadata = dict(metadata or {})
+
         return RiskDecisionEvent(
             patient_id=event.patient_id,
             event_id=event.event_id,
@@ -85,6 +88,7 @@ class RiskDecisionEngine:
             analysis_level=analysis_level,
             requested_checks=requested_checks,
             verification_required=verification_required,
+            metadata=event_metadata,
         )
 
     def decide_from_failure(
@@ -93,6 +97,7 @@ class RiskDecisionEngine:
         error: Exception,
         retry_count: int,
         model_name: str,
+        metadata: dict[str, Any] | None = None,
     ) -> RiskDecisionEvent:
         """Handle ML inference or context failures gracefully."""
         if retry_count < self.max_retries:
@@ -105,6 +110,8 @@ class RiskDecisionEngine:
             status = "failed"
             reason = f"Exhausted {self.max_retries} retries on model evaluation: {error}. Escalating to clinical team as safety fallback."
             recommended_action = "Manual clinician evaluation required due to automated risk tool failure."
+
+        event_metadata = dict(metadata or {})
 
         return RiskDecisionEvent(
             patient_id=event.patient_id,
@@ -126,5 +133,6 @@ class RiskDecisionEngine:
             analysis_level="verification",
             requested_checks=["data_quality", "verification"],
             verification_required=True,
+            metadata=event_metadata,
         )
 

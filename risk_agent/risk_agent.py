@@ -10,7 +10,7 @@ import datetime
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -26,6 +26,7 @@ from communication.events import (
 from risk_agent.decision_engine import RiskDecisionEngine
 from risk_agent.model import RiskModelTool
 from risk_agent.preprocessing import (
+    MIN_WINDOW_SAMPLES,
     VITAL_COLUMNS_7,
     construct_features as _construct_features,
     gather_patient_context as _gather_patient_context,
@@ -54,6 +55,7 @@ class RiskAgent:
         verbose: bool = False,
         enable_llm: bool = False,
         llm_reasoner: Any | None = None,
+        window_provider: Callable[[int], pd.DataFrame] | None = None,
     ):
         self.name = name
         self.event_queue = event_queue
@@ -61,6 +63,7 @@ class RiskAgent:
         self.verbose = verbose
         self.enable_llm = enable_llm
         self.llm_reasoner = llm_reasoner or (GeminiRiskReasoner() if enable_llm else None)
+        self.window_provider = window_provider
 
         # ML Model Tool loading
         self.model_tool = RiskModelTool(model_dir=model_dir)
@@ -119,13 +122,21 @@ class RiskAgent:
         event: MonitoringEvent,
         patient_context: dict[str, float],
         window_df: pd.DataFrame | None = None,
-    ) -> dict[str, float]:
+        return_source: bool = False,
+    ) -> dict[str, float] | tuple[dict[str, float], str]:
         """Construct feature vector aligned with trained model feature columns."""
+        if window_df is None and self.window_provider is not None:
+            try:
+                window_df = self.window_provider(event.patient_id)
+            except Exception:
+                window_df = None
+
         return _construct_features(
             event=event,
             patient_context=patient_context,
             feature_columns=self.feature_columns,
             window_df=window_df,
+            return_source=return_source,
         )
 
     def use_ml_model_tool(self, features: dict[str, float]) -> float:
@@ -150,6 +161,12 @@ class RiskAgent:
         self.state.record_received_event(event)
         self.emit_heartbeat()
 
+        if window_df is None and self.window_provider is not None:
+            try:
+                window_df = self.window_provider(event.patient_id)
+            except Exception:
+                window_df = None
+
         if self.verbose:
             print(_format_log(self.name, "RECEIVE", f"event={event.event_id} (Severity: {event.severity})"))
 
@@ -163,6 +180,7 @@ class RiskAgent:
                 error=err,
                 retry_count=self.max_retries,
                 model_name=self.model_name,
+                metadata={"feature_source": "approximated_fallback"},
             )
             self._respond(decision_event)
             return decision_event
@@ -174,10 +192,12 @@ class RiskAgent:
         while retry_count <= self.max_retries:
             try:
                 patient_context = self.gather_patient_context(event.patient_id)
-                features = self.construct_features(event, patient_context, window_df=window_df)
+                features, feature_source = self.construct_features(
+                    event, patient_context, window_df=window_df, return_source=True
+                )
 
                 if self.verbose:
-                    print(_format_log(self.name, "ML_TOOL", f"Invoking {self.model_name} on patient {event.patient_id}"))
+                    print(_format_log(self.name, "ML_TOOL", f"Invoking {self.model_name} on patient {event.patient_id} (source: {feature_source})"))
 
                 probability = self.use_ml_model_tool(features)
 
@@ -188,6 +208,7 @@ class RiskAgent:
                     threshold=self.risk_threshold,
                     model_name=self.model_name,
                     features=features,
+                    metadata={"feature_source": feature_source},
                 )
 
                 if self.verbose:
@@ -215,6 +236,7 @@ class RiskAgent:
             error=last_exception if last_exception is not None else RuntimeError("Unknown error"),
             retry_count=retry_count,
             model_name=self.model_name,
+            metadata={"feature_source": "approximated_fallback"},
         )
         self._respond(fail_event)
 
@@ -433,7 +455,13 @@ class RiskAgent:
 
             # Process escalation events
             if isinstance(event, MonitoringEvent) and event.event_type == "alert_started":
-                self.process_event(event)
+                window_df = None
+                if self.window_provider is not None:
+                    try:
+                        window_df = self.window_provider(event.patient_id)
+                    except Exception:
+                        window_df = None
+                self.process_event(event, window_df=window_df)
 
         self._is_running = False
         if self.verbose:

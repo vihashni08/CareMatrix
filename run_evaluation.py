@@ -118,6 +118,10 @@ def evaluate_scenario(
     bypassed = runtime.metrics["routine_bypassed_cycles"]
     escalated = runtime.metrics["escalated_cycles"]
 
+    risk_prob = round(r_hist[0].risk_probability, 4) if r_hist else None
+    risk_dec = r_hist[0].decision if r_hist else None
+    feat_src = r_hist[0].metadata.get("feature_source", "none") if (r_hist and getattr(r_hist[0], "metadata", None)) else "none"
+
     return {
         "scenario": scenario.value,
         "observations_evaluated": steps,
@@ -125,6 +129,9 @@ def evaluate_scenario(
         "detection_step": detection_step,
         "time_to_detection_seconds": time_to_detection,
         "risk_triggered": len(r_hist) > 0,
+        "risk_probability": risk_prob,
+        "risk_decision": risk_dec,
+        "feature_source": feat_src,
         "data_analysis_triggered": len(a_hist) > 0,
         "clinical_reasoning_triggered": len(c_hist) > 0,
         "care_coordination_triggered": len(coord_hist) > 0,
@@ -297,21 +304,23 @@ def main():
     print(f"Workload Reduction:                           {comparison['comparison_metrics']['workload_reduction_percentage']}%")
 
     # Format Results Table
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 105)
     print("SCENARIO EVALUATION SUMMARY")
-    print("=" * 90)
-    hdr = f"{'Scenario':<24} | {'Detected':<8} | {'Det. Step':<10} | {'Risk':<5} | {'Analysis':<8} | {'Reasoning':<9} | {'Care Action':<22}"
+    print("=" * 105)
+    hdr = f"{'Scenario':<24} | {'Det':<4} | {'Step':<5} | {'Risk Prob':<10} | {'Source':<12} | {'Risk':<5} | {'Analysis':<8} | {'Reasoning':<9} | {'Care Action':<22}"
     print(hdr)
-    print("-" * 90)
+    print("-" * 105)
     for r in scenario_results:
         sc_name = r["scenario"]
         det = "YES" if r["abnormality_detected"] else "NO"
         step_val = str(r["detection_step"]) if r["detection_step"] else "-"
+        risk_prob_val = f"{r['risk_probability']:.4f}" if r["risk_probability"] is not None else "-"
+        feat_src = str(r.get("feature_source", "-"))
         risk_trig = "YES" if r["risk_triggered"] else "NO"
         ana_trig = "YES" if r["data_analysis_triggered"] else "NO"
         reas_trig = "YES" if r["clinical_reasoning_triggered"] else "NO"
         act_name = r["action_generated"][:22]
-        print(f"{sc_name:<24} | {det:<8} | {step_val:<10} | {risk_trig:<5} | {ana_trig:<8} | {reas_trig:<9} | {act_name:<22}")
+        print(f"{sc_name:<24} | {det:<4} | {step_val:<5} | {risk_prob_val:<10} | {feat_src:<12} | {risk_trig:<5} | {ana_trig:<8} | {reas_trig:<9} | {act_name:<22}")
 
     full_report = {
         "timestamp": time.time(),

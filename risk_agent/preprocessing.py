@@ -76,17 +76,24 @@ def extract_window_features(window: pd.DataFrame) -> dict[str, float]:
     return features
 
 
+MIN_WINDOW_SAMPLES = 5
+
+
 def construct_features(
     event: MonitoringEvent,
     patient_context: dict[str, float],
     feature_columns: list[str],
     window_df: pd.DataFrame | None = None,
-) -> dict[str, float]:
+    min_window_samples: int = MIN_WINDOW_SAMPLES,
+    return_source: bool = False,
+) -> dict[str, float] | tuple[dict[str, float], str]:
     """Construct feature dictionary aligned with trained model feature columns."""
     features: dict[str, float] = {col: np.nan for col in feature_columns}
+    feature_source = "approximated_fallback"
 
-    if window_df is not None and not window_df.empty:
+    if window_df is not None and not window_df.empty and len(window_df) >= min_window_samples:
         features.update(extract_window_features(window_df))
+        feature_source = "window"
     else:
         for vital in event.affected_vitals:
             curr = event.current_values.get(vital, np.nan)
@@ -106,13 +113,17 @@ def construct_features(
             features[f"{vital}_slope"] = 1.0 if trend == "increasing" else -1.0 if trend == "decreasing" else 0.0
 
     features.update(patient_context)
+    if return_source:
+        return features, feature_source
     return features
 
 
 __all__ = [
+    "MIN_WINDOW_SAMPLES",
     "VITAL_COLUMNS_7",
     "construct_features",
     "extract_window_features",
     "gather_patient_context",
 ]
+
 
