@@ -16,41 +16,38 @@ def is_high_risk_case(
 ) -> bool:
     """Evaluate whether a case meets the shared high-risk definition.
 
-    Shared between DataAnalysis requirements and ClinicalReasoning evidence retrieval gating:
-    True if decision is HIGH_RISK, OR probability >= 0.16, OR severity in (severe, critical).
-    Fails safe to True if decision is missing, empty, or unparseable.
+    - return True if decision is None/empty
+    - return True if decision is HIGH_RISK / HIGH
+    - for LOW_RISK / LOW / NORMAL / STABLE: return True if probability >= 0.16 or severity in (severe, critical)
+    - default to True (fail-safe) for anything unrecognized
     """
-    if decision is None and probability is None and severity is None:
+    if decision is None:
         return True
 
-    if decision is not None:
-        d_str = str(decision).strip().upper().replace(" ", "_")
-        if not d_str:
-            return True
-        if d_str in ("HIGH_RISK", "HIGH"):
-            return True
-        if d_str not in ("LOW_RISK", "LOW", "MODERATE", "MEDIUM", "INDETERMINATE"):
-            # Unparseable / unrecognized risk string -> fail safe to True
-            return True
+    d_str = str(decision).strip().upper().replace(" ", "_")
+    if not d_str:
+        return True
 
-    if probability is not None:
-        try:
-            if float(probability) >= 0.16:
+    if d_str in ("HIGH_RISK", "HIGH"):
+        return True
+
+    if d_str in ("LOW_RISK", "LOW", "NORMAL", "STABLE"):
+        if probability is not None:
+            try:
+                if float(probability) >= 0.16:
+                    return True
+            except (ValueError, TypeError):
+                pass
+
+        if severity is not None:
+            s_str = str(severity).strip().lower()
+            if s_str in ("severe", "critical"):
                 return True
-        except (ValueError, TypeError):
-            pass
 
-    if severity is not None:
-        s_str = str(severity).strip().lower()
-        if s_str in ("severe", "critical"):
-            return True
+        return False
 
-    if decision is not None:
-        d_str = str(decision).strip().upper().replace(" ", "_")
-        if d_str in ("LOW_RISK", "LOW"):
-            return False
-
-    return False
+    # Default to True (fail-safe) for anything unrecognized
+    return True
 
 
 def determine_analysis_requirements(
