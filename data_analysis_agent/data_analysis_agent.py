@@ -8,12 +8,18 @@ from __future__ import annotations
 
 import datetime
 import threading
+import time
 from typing import Any, Callable
 
 import pandas as pd
 
 from communication.event_queue import EventQueue
-from communication.events import DataAnalysisEvent, PerformativeType, RiskDecisionEvent
+from communication.events import (
+    AgentHeartbeatEvent,
+    DataAnalysisEvent,
+    PerformativeType,
+    RiskDecisionEvent,
+)
 from communication.orchestration import verify_cross_agent_consistency
 from data_analysis_agent.analyzer import (
     assess_window_quality,
@@ -53,9 +59,26 @@ class DataAnalysisAgent:
         self.data_loader = data_loader or _default_load_case_data
         self.patient_states: dict[int, PatientAnalysisState] = {}
         self.verbose = bool(verbose)
+        self.is_healthy: bool = True
         self._worker_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._is_running: bool = False
+
+    def emit_heartbeat(self) -> AgentHeartbeatEvent:
+        """Publish heartbeat to supervisor."""
+        analysed = sum(s.analysed_events for s in self.patient_states.values())
+        hb = AgentHeartbeatEvent(
+            agent_name=self.name,
+            status="healthy" if self.is_healthy else "degraded",
+            metrics={
+                "monitored_patients": len(self.patient_states),
+                "analysed_events": analysed,
+                "is_running": self._is_running,
+            },
+        )
+        if self.event_queue is not None:
+            self.event_queue.publish("heartbeats", hb)
+        return hb
 
     # ------------------------------------------------------------------------
     # Autonomous Event Processing Cycle
@@ -68,6 +91,7 @@ class DataAnalysisAgent:
         timestamp = float(getattr(risk_event, "timestamp", 0.0) or 0.0)
         risk_level = str(getattr(risk_event, "risk_level", "INDETERMINATE"))
         state = self.patient_states.setdefault(case_id, PatientAnalysisState())
+        self.emit_heartbeat()
 
         try:
             # 1. RECEIVE & VALIDATE
@@ -307,10 +331,21 @@ class DataAnalysisAgent:
 
     def _worker_loop(self) -> None:
         """Continuous event consumption loop for risk decision assessments."""
+        self.emit_heartbeat()
+        last_hb = time.time()
         while not self._stop_event.is_set():
             event = self.event_queue.consume("risk_decisions", timeout=0.2) if self.event_queue else None
             if isinstance(event, RiskDecisionEvent):
                 self.process_event(event)
+                self.emit_heartbeat()
+
+            if not self.event_queue:
+                time.sleep(0.1)
+
+            if time.time() - last_hb >= 1.0:
+                self.emit_heartbeat()
+                last_hb = time.time()
+
         if self.verbose:
             print(_format_log(self.name, "STOPPED", f"Worker loop finished ({sum(s.analysed_events for s in self.patient_states.values())} events processed)."))
         self._is_running = False

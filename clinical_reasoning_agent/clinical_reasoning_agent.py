@@ -386,10 +386,21 @@ class ClinicalReasoningAgent:
 
     def _worker_loop(self) -> None:
         """Continuous event consumption loop for analytical evidence."""
+        self.emit_heartbeat()
+        last_hb = time.time()
         while not self._stop_event.is_set():
             event = self.event_queue.consume("clinical_reasoning_events", timeout=0.2) if self.event_queue else None
             if isinstance(event, DataAnalysisEvent):
                 self.process_event(event)
+                self.emit_heartbeat()
+
+            if not self.event_queue:
+                time.sleep(0.1)
+
+            if time.time() - last_hb >= 1.0:
+                self.emit_heartbeat()
+                last_hb = time.time()
+
         self._is_running = False
         if self.verbose:
             print(_format_log(self.name, "STOPPED", "Worker loop finished."))
