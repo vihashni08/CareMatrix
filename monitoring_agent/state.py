@@ -20,6 +20,12 @@ from monitoring_agent.config import (
     SEVERITY_PERSISTENCE,
 )
 
+# VITAL_COLUMNS defines the core high-frequency physiological vitals monitored
+# in real time for rapid threshold deviations and acute alerts (HR, MAP, SpO2, RR).
+# Note on Body Temperature (BT): BT is processed strictly as an input feature by the
+# 54-feature Risk Agent model, but is omitted from rapid 5-second real-time alert loops
+# because core body temperature shifts over long clinical time horizons (tens of minutes/hours)
+# rather than seconds.
 VITAL_COLUMNS = ["HR", "MAP", "SpO2", "RR"]
 SEVERITY_LEVELS = ("mild", "moderate", "severe", "critical")
 _SEVERITY_NUM = {"normal": 0, "mild": 1, "moderate": 2, "severe": 3, "critical": 4}
@@ -34,6 +40,9 @@ class PatientMonitoringState:
         # Buffer of raw observations up to max required window (e.g. 120 samples)
         self.raw_buffer: list[dict[str, Any]] = []
         self.max_buffer_size: int = max(BASELINE_WINDOW_SECONDS * 2, 120)
+
+        # Missing data / sensor disconnect tracking per vital
+        self.consecutive_missing_samples: dict[str, int] = {v: 0 for v in VITAL_COLUMNS}
 
         # Event tracking
         self.event_tracker = PhysiologicalEventTracker(case_id)
@@ -104,11 +113,20 @@ class PatientMonitoringState:
             vital: clean_sample.get(vital, np.nan) for vital in VITAL_COLUMNS
         }
 
+        # Track consecutive missing samples per vital for sensor disconnect detection
+        for vital in VITAL_COLUMNS:
+            val = clean_sample.get(vital, np.nan)
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                self.consecutive_missing_samples[vital] = self.consecutive_missing_samples.get(vital, 0) + 1
+            else:
+                self.consecutive_missing_samples[vital] = 0
+
     def get_snapshot(self) -> dict[str, Any]:
         """Export state snapshot for supervisor checkpointing and recovery."""
         return {
             "case_id": self.case_id,
             "raw_buffer": deepcopy(self.raw_buffer),
+            "consecutive_missing_samples": deepcopy(self.consecutive_missing_samples),
             "next_event_id": self.next_event_id,
             "active_event_id": self.active_event_id,
             "active_event_state": self.active_event_state,
@@ -128,6 +146,7 @@ class PatientMonitoringState:
         """Restore state from a supervisor checkpoint."""
         self.case_id = snapshot["case_id"]
         self.raw_buffer = deepcopy(snapshot["raw_buffer"])
+        self.consecutive_missing_samples = deepcopy(snapshot.get("consecutive_missing_samples", {v: 0 for v in VITAL_COLUMNS}))
         self.next_event_id = snapshot["next_event_id"]
         self.active_event_id = snapshot["active_event_id"]
         self.active_event_state = snapshot["active_event_state"]

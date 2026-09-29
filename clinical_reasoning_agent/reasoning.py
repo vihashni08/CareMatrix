@@ -296,7 +296,7 @@ class ClinicalReasoningEngine:
 
         # 2. Preserve Deterministic Safety Boundaries
         final_verification_required = (
-            deterministic.verification_required or is_high_risk or data_quality_flag
+            deterministic.verification_required or conflict or data_quality_flag
         )
         final_data_reliability = (
             "COMPROMISED"

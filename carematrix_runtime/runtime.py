@@ -234,7 +234,13 @@ class CareMatrixRuntime:
             if listener in self._live_listeners:
                 self._live_listeners.remove(listener)
 
-    def add_dataset_patient(self, case_id: int | str, adapter_name: str = "vitaldb") -> dict[str, Any]:
+    def add_dataset_patient(
+        self,
+        case_id: int | str,
+        adapter_name: str = "vitaldb",
+        speed_multiplier: float = 1.0,
+        start_sample: int = 0,
+    ) -> dict[str, Any]:
         """Load a real dataset case and stream its observations through the agent pipeline.
 
         If a patient with the same adapter+case_id is already running, returns the existing
@@ -248,6 +254,8 @@ class CareMatrixRuntime:
         Args:
             case_id: Case identifier understood by the selected adapter.
             adapter_name: "vitaldb" (default) or "mimic".
+            speed_multiplier: Replay speed multiplier (default: 1.0).
+            start_sample: Starting sample index to skip induction (default: 0).
 
         Returns:
             A dict with patient_id, case_id, adapter, data_source, and name — the same shape
@@ -273,16 +281,19 @@ class CareMatrixRuntime:
         if adapter_name_lower in ("mimic", "mimic-iv", "mimic_iv"):
             adapter = MIMICIVAdapter()
             source_label = f"MIMIC-IV:case_{case_id}"
+            bed_name = f"Bed {case_id_int} ({source_label})"
         else:
             adapter = VitalDBAdapter()
             source_label = f"VitalDB:case_{case_id}"
+            bed_name = f"VitalDB case {case_id_int} — replay"
 
         # Pace observations at the same interval as the simulated patient loop
         replayer = PatientStreamReplayer(
             case_id=case_id,
             adapter=adapter,
             loop=True,
-            delay_seconds=self.stream_interval,  # one observation per stream_interval seconds
+            delay_seconds=self.stream_interval,
+            speed_multiplier=speed_multiplier,
         )
 
         # Assign a unique patient_id in the 200+ range, avoiding collisions
@@ -290,7 +301,6 @@ class CareMatrixRuntime:
             existing_ids = set(self._dataset_sources.keys())
             new_pid = max(existing_ids, default=199) + 1
 
-            bed_name = f"Bed {new_pid} ({source_label})"
             self.state_manager.get_or_create(new_pid, name=bed_name)
 
             entry: dict[str, Any] = {
@@ -298,6 +308,7 @@ class CareMatrixRuntime:
                 "data_source": source_label,
                 "case_id": case_id_int,
                 "adapter_name": adapter_name_lower,
+                "start_sample": start_sample,
                 "thread": None,
             }
             self._dataset_sources[new_pid] = entry
@@ -340,9 +351,10 @@ class CareMatrixRuntime:
         replayer: PatientStreamReplayer = entry["replayer"]
         data_source: str = entry["data_source"]
         case_id = entry["case_id"]
+        start_samp = entry.get("start_sample", 0)
 
         try:
-            for sample in replayer.stream():
+            for sample in replayer.stream(start_sample=start_samp):
                 if self._stop_event.is_set():
                     break
                 # Augment sample with patient_id, case_id, and data_source so downstream agents

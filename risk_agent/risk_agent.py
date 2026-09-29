@@ -158,8 +158,11 @@ class RiskAgent:
         RECEIVE EVENT -> VALIDATE -> REASON (CONTEXT & ML TOOL) -> DECIDE -> RESPOND
         """
         # 1. RECEIVE EVENT
+        t_start = time.perf_counter()
         self.state.record_received_event(event)
         self.emit_heartbeat()
+
+        prev_cumulative = float((event.metadata or {}).get("cumulative_latency_ms", 0.0) or 0.0) if hasattr(event, "metadata") and event.metadata else 0.0
 
         if window_df is None and self.window_provider is not None:
             try:
@@ -175,12 +178,18 @@ class RiskAgent:
         if not is_valid:
             err = ValueError(f"Invalid monitoring event: {validation_msg}")
             self.state.record_failure(event.event_id, str(err))
+            risk_latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
             decision_event = self.decision_engine.decide_from_failure(
                 event=event,
                 error=err,
                 retry_count=self.max_retries,
                 model_name=self.model_name,
-                metadata={"feature_source": "approximated_fallback"},
+                metadata={
+                    "feature_source": "approximated_fallback",
+                    "stage_latency_ms": risk_latency_ms,
+                    "risk_latency_ms": risk_latency_ms,
+                    "cumulative_latency_ms": round(prev_cumulative + risk_latency_ms, 2),
+                },
             )
             self._respond(decision_event)
             return decision_event
@@ -202,13 +211,19 @@ class RiskAgent:
                 probability = self.use_ml_model_tool(features)
 
                 # 4. DECIDE
+                risk_latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
                 decision_event = self.decision_engine.decide_from_prediction(
                     event=event,
                     probability=probability,
                     threshold=self.risk_threshold,
                     model_name=self.model_name,
                     features=features,
-                    metadata={"feature_source": feature_source},
+                    metadata={
+                        "feature_source": feature_source,
+                        "stage_latency_ms": risk_latency_ms,
+                        "risk_latency_ms": risk_latency_ms,
+                        "cumulative_latency_ms": round(prev_cumulative + risk_latency_ms, 2),
+                    },
                 )
 
                 if self.verbose:
@@ -231,12 +246,18 @@ class RiskAgent:
         # Fallback when retries are exhausted
         self.is_healthy = False
         self.state.record_failure(event.event_id, str(last_exception))
+        risk_latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
         fail_event = self.decision_engine.decide_from_failure(
             event=event,
             error=last_exception if last_exception is not None else RuntimeError("Unknown error"),
             retry_count=retry_count,
             model_name=self.model_name,
-            metadata={"feature_source": "approximated_fallback"},
+            metadata={
+                "feature_source": "approximated_fallback",
+                "stage_latency_ms": risk_latency_ms,
+                "risk_latency_ms": risk_latency_ms,
+                "cumulative_latency_ms": round(prev_cumulative + risk_latency_ms, 2),
+            },
         )
         self._respond(fail_event)
 

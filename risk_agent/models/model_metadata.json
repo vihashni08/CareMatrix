@@ -1,0 +1,27 @@
+{
+    "training_date": "2026-09-29T11:22:03.548397+00:00",
+    "selected_model": "Extra Trees",
+    "selected_threshold": 0.5100000000000001,
+    "primary_case_aggregation": "max",
+    "random_state": 42,
+    "window_seconds": 300,
+    "sample_interval": 5,
+    "max_training_minutes": 60,
+    "num_features": 54,
+    "split_summary": {
+        "train_cases": 112,
+        "train_windows": 1333,
+        "validation_cases": 24,
+        "validation_windows": 288,
+        "test_cases": 24,
+        "test_windows": 282
+    },
+    "library_versions": {
+        "python": "3.9.6",
+        "scikit_learn": "1.6.1",
+        "xgboost": "2.1.4",
+        "numpy": "2.0.2",
+        "pandas": "2.3.3"
+    },
+    "label_definition": "High Risk = (death_inhosp == 1) | (icu_days > 0) [case-level outcome mapped to window data]"
+}

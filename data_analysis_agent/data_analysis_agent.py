@@ -85,6 +85,7 @@ class DataAnalysisAgent:
     # ------------------------------------------------------------------------
     def process_event(self, risk_event: RiskDecisionEvent) -> DataAnalysisEvent:
         """Perform one autonomous analysis cycle and always return a traceable event."""
+        t_start = time.perf_counter()
         # Extract defensively before validation so a malformed event cannot crash worker
         case_id = int(getattr(risk_event, "patient_id", 0) or 0)
         event_id = str(getattr(risk_event, "event_id", "unknown_risk_event"))
@@ -92,6 +93,12 @@ class DataAnalysisAgent:
         risk_level = str(getattr(risk_event, "risk_level", "INDETERMINATE"))
         state = self.patient_states.setdefault(case_id, PatientAnalysisState())
         self.emit_heartbeat()
+
+        prev_cumulative = (
+            float((risk_event.metadata or {}).get("cumulative_latency_ms", 0.0) or 0.0)
+            if hasattr(risk_event, "metadata") and isinstance(risk_event.metadata, dict)
+            else 0.0
+        )
 
         try:
             # 1. RECEIVE & VALIDATE
@@ -297,6 +304,14 @@ class DataAnalysisAgent:
 
         state.last_analysed_timestamp = timestamp
         state.analysed_events += 1
+
+        # Record stage latency and cumulative latency
+        analysis_latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
+        meta = dict(result.metadata) if hasattr(result, "metadata") and isinstance(result.metadata, dict) else {}
+        meta["stage_latency_ms"] = analysis_latency_ms
+        meta["analysis_latency_ms"] = analysis_latency_ms
+        meta["cumulative_latency_ms"] = round(prev_cumulative + analysis_latency_ms, 2)
+        result.metadata = meta
 
         # 5. ACT & COMMUNICATE
         self._publish(result)

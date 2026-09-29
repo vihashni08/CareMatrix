@@ -35,21 +35,62 @@ def assess_window_quality(
     }
     flagged = len(window) < 2
 
+    # Track how many vitals exhibit sustained physiological changes
+    sustained_shift_count = 0
+
     for vital in VITAL_COLUMNS:
+        if vital not in window.columns:
+            continue
         values = window[vital]
         missing_ratio = float(values.isna().mean()) if len(values) else 1.0
         clean = values.dropna()
         artifact = False
+
         if len(clean) >= 3:
             jumps = clean.diff().abs().dropna()
             typical = float(jumps.median())
-            artifact = bool((jumps > max(typical * 8, 1e-9)).any() and typical > 0)
+
+            # Detect transient spikes or high-frequency sensor oscillations
+            # An artifact is an isolated transient spike (jump + immediate reversal)
+            # or rapid sign oscillation, NOT a sustained step change.
+            transient_spikes = 0
+            for i in range(1, len(clean) - 1):
+                diff_prev = float(clean.iloc[i] - clean.iloc[i - 1])
+                diff_next = float(clean.iloc[i + 1] - clean.iloc[i])
+                if abs(diff_prev) > max(typical * 5, 8.0):
+                    # Check if sample i is a transient spike reversing back towards i-1
+                    if diff_prev * diff_next < 0 and abs(float(clean.iloc[i + 1] - clean.iloc[i - 1])) < abs(diff_prev) * 0.5:
+                        transient_spikes += 1
+
+            diffs = clean.diff().dropna()
+            # Frequent sign reversals on large jumps indicate sensor jitter / noise
+            oscillations = 0
+            if len(diffs) >= 3:
+                sign_changes = (diffs.iloc[:-1].values * diffs.iloc[1:].values) < 0
+                large_jumps = diffs.abs().iloc[:-1].values > max(typical * 3, 6.0)
+                oscillations = int((sign_changes & large_jumps).sum())
+
+            if transient_spikes >= 1 or oscillations >= 2:
+                artifact = True
+            elif len(clean) >= 4:
+                net_change = abs(float(clean.iloc[-1] - clean.iloc[0]))
+                if net_change > max(typical * 4, 8.0):
+                    sustained_shift_count += 1
+
         details["vitals"][vital] = {
             "missing_ratio": round(missing_ratio, 4),
             "valid_samples": int(len(clean)),
             "possible_artifact": artifact,
         }
         flagged = flagged or missing_ratio > 0.5 or artifact
+
+    # If multiple vitals show concordant sustained physiological shifts,
+    # override single-vital artifact false-alarms because simultaneous multi-vital shifts
+    # reflect true systemic deterioration rather than isolated probe detachment.
+    if sustained_shift_count >= 2 and not any(v_info["missing_ratio"] > 0.5 for v_info in details["vitals"].values()):
+        flagged = False
+        for v in details["vitals"]:
+            details["vitals"][v]["possible_artifact"] = False
 
     details["insufficient_samples"] = len(window) < expected * 0.25
     return bool(flagged), details

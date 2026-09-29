@@ -48,6 +48,24 @@ def main():
         help="Automatically open the web dashboard in your default browser",
     )
     parser.add_argument(
+        "--cases",
+        type=str,
+        default="242,532,1271",
+        help="Comma-separated real VitalDB test-split case IDs to monitor (default: 242,532,1271)",
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Telemetry replay speed multiplier (default: 1.0)",
+    )
+    parser.add_argument(
+        "--start-sample",
+        type=int,
+        default=60,
+        help="Starting sample offset to skip noisy induction period (default: 60)",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress detailed agent terminal logs",
@@ -55,6 +73,7 @@ def main():
     args = parser.parse_args()
 
     url = f"http://localhost:{args.port}/"
+    case_ids = [int(c.strip()) for c in args.cases.split(",") if c.strip().isdigit()]
 
     print("=" * 72)
     print("CAREMATRIX — INTELLIGENT HEALTHCARE DECISION SUPPORT SYSTEM")
@@ -62,7 +81,7 @@ def main():
     print("=" * 72)
     print(f"• Active Pipeline    : Monitoring → Risk → Data Analysis → Clinical Reasoning → Care Coordination")
     print(f"• Supervisor Status  : Active (Continuous heartbeat tracking & recovery)")
-    print(f"• Simulation Stream  : Active (Beds 101, 102, 103, interval={args.interval}s)")
+    print(f"• Monitored Beds     : VitalDB test cases {case_ids} (replay speed={args.speed}x, start_sample={args.start_sample})")
     print(f"• Reasoning Engine   : {'Gemini 2.5 Flash + Medical RAG' if args.enable_llm else 'Deterministic Clinical Rules + RAG'}")
     print(f"• Clinician Dashboard: {url}")
     print("=" * 72)
@@ -79,6 +98,15 @@ def main():
         enable_llm_reasoning=args.enable_llm,
         verbose=not args.quiet,
     )
+
+    # Pre-register default real VitalDB test-split beds
+    for cid in case_ids:
+        runtime.add_dataset_patient(
+            case_id=cid,
+            adapter_name="vitaldb",
+            speed_multiplier=args.speed,
+            start_sample=args.start_sample,
+        )
 
     run_server(
         host=args.host,

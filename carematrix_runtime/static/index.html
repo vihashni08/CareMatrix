@@ -550,14 +550,14 @@
                 </div>
               </div>
 
-              {/* Scenario Simulation Controller */}
+              {/* Scenario Simulation Controller (Optional Fault Injection — Testing Only) */}
               <div className="bg-medCard border border-medBorder p-4 rounded-xl flex flex-col justify-between">
                 <div>
                   <div className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                    <span>Simulation Scenario</span>
-                    <span className="text-[10px] text-sky-400 font-mono">Live Inject</span>
+                    <span>Fault Injection (Synthetic)</span>
+                    <span className="text-[10px] text-amber-400 font-mono">Test Only</span>
                   </div>
-                  <p className="text-xs text-slate-300 mt-1">Current: <b className="text-white">{activePatient?.scenario || 'STABLE'}</b></p>
+                  <p className="text-xs text-slate-300 mt-1">Current State: <b className="text-white">{activePatient?.scenario || 'STABLE'}</b></p>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 mt-3">
                   <button

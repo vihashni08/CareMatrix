@@ -348,7 +348,7 @@ class TestCareMatrixAgentArchitecture(unittest.TestCase):
     # ------------------------------------------------------------------------
     def test_risk_agent_uses_actual_trained_model(self):
         """Verify RiskAgent dynamically identifies and executes the saved model artifact."""
-        self.assertEqual(self.risk_agent.model_name, "RandomForestClassifier")
+        self.assertEqual(self.risk_agent.model_name, type(self.risk_agent.model).__name__)
         self.assertIsNotNone(self.risk_agent.model)
         self.assertIsNotNone(self.risk_agent.preprocessor)
         self.assertEqual(len(self.risk_agent.feature_columns), 54)

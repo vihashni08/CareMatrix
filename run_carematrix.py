@@ -523,7 +523,7 @@ def run_carematrix(case_id: int) -> dict[str, Any]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the CareMatrix Autonomous Agent System.")
-    parser.add_argument("--case-id", type=int, default=0, help="Patient case ID (default: 0 for synthetic, 4 for real)")
+    parser.add_argument("--case-id", type=int, default=242, help="Patient case ID (default: 242 from VitalDB test split)")
     parser.add_argument("--samples", type=int, default=100, help="Maximum samples to stream (default: 100)")
     parser.add_argument("--start-sample", type=int, default=0, help="Starting sample offset to stream (e.g. 800 for Case 4)")
     parser.add_argument("--delay", type=float, default=0.03, help="Stream sample delay in seconds (default: 0.03)")

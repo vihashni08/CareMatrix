@@ -108,9 +108,16 @@ class CareCoordinationAgent:
     # ------------------------------------------------------------------------
     def process_event(self, event: ClinicalReasoningEvent) -> CareCoordinationEvent:
         """Process one clinical reasoning event and emit an actionable care plan."""
+        t_start = time.perf_counter()
         case_id = int(getattr(event, "case_id", 0) or getattr(event, "patient_id", 0) or 0)
         event_id = str(getattr(event, "event_id", "unknown_event"))
         priority = str(getattr(event, "priority", "ROUTINE"))
+
+        prev_cumulative = (
+            float((event.metadata or {}).get("cumulative_latency_ms", 0.0) or 0.0)
+            if hasattr(event, "metadata") and isinstance(event.metadata, dict)
+            else 0.0
+        )
 
         state = self.patient_states.setdefault(case_id, PatientCoordinationState(patient_id=case_id))
         self.emit_heartbeat()
@@ -152,6 +159,14 @@ class CareCoordinationAgent:
                 metadata={"error": str(exc), "fallback": True},
             )
             state.record_action(action_event)
+
+        # Record stage latency and cumulative pipeline latency
+        coord_latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
+        meta = dict(action_event.metadata) if hasattr(action_event, "metadata") and isinstance(action_event.metadata, dict) else {}
+        meta["stage_latency_ms"] = coord_latency_ms
+        meta["coordination_latency_ms"] = coord_latency_ms
+        meta["cumulative_latency_ms"] = round(prev_cumulative + coord_latency_ms, 2)
+        action_event.metadata = meta
 
         if self.verbose:
             print(_format_log(

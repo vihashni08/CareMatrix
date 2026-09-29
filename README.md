@@ -6,7 +6,7 @@ CareMatrix is an autonomous, event-driven multi-agent clinical decision support 
 
 ## 1. Multi-Agent Architecture
 
-The CareMatrix pipeline consists of 5 autonomous agents operating under an independent supervisor:
+CareMatrix consists of **5 autonomous task agents** coordinated by an independent **Agent Supervisor**:
 
 ```text
                   ┌───────────────────────────────┐
@@ -15,27 +15,27 @@ The CareMatrix pipeline consists of 5 autonomous agents operating under an indep
                   └───────────────┬───────────────┘
                                   │
 Continuous Telemetry Stream       │
-(Multi-Bed ICU / Floor Simulator) │
+(Real VitalDB Replay / Multi-Bed) │
               │                   │
               ▼                   │
     ┌───────────────────┐         │
-    │  Monitoring Agent │◄────────┤ (Continuous baseline, multi-vital deviation,
-    └─────────┬─────────┘         │  adaptive execution gatekeeper)
+    │  Monitoring Agent │◄────────┤ (Continuous rolling baseline, multi-vital deviation,
+    └─────────┬─────────┘         │  sensor disconnect detection, adaptive gatekeeper)
               │ (Escalation / Recovery)
               ▼                   │
     ┌───────────────────┐         │
-    │    Risk Agent     │◄────────┤ (RandomForestClassifier, threshold 0.16,
-    └─────────┬─────────┘         │  retries, adaptive check requests)
+    │    Risk Agent     │◄────────┤ (ExtraTreesClassifier, 54 features, threshold 0.51,
+    └─────────┬─────────┘         │  5-minute rolling window feature extraction)
               │ (Risk Decision Event)
               ▼                   │
     ┌───────────────────┐         │
-    │Data Analysis Agent│◄────────┤ (Variance, trend slopes, signal noise check,
+    │Data Analysis Agent│◄────────┤ (Multi-vital trend slopes, artifact detection,
     └─────────┬─────────┘         │  cross-agent consistency verification)
               │ (Analytical Evidence Event)
               ▼                   │
     ┌───────────────────┐         │
-    │Clinical Reasoning │◄────────┤ (Medical RAG guideline retrieval +
-    │      Agent        │         │  Gemini 2.5 Flash / Deterministic reasoning)
+    │Clinical Reasoning │◄────────┤ (Medical RAG via PubMed API + Curated Guidelines,
+    │      Agent        │         │  Gemini LLM Reasoner + Deterministic Safety Arbiter)
     └─────────┬─────────┘         │
               │ (Clinical Reasoning Event)
               ▼                   │
@@ -57,115 +57,99 @@ Continuous Telemetry Stream       │
              Modern Clinician Dashboard
 ```
 
-### The 5 Autonomous Agents
+### The 5 Autonomous Task Agents
 
 1. **Monitoring Agent**:
-   - Performs patient-specific physiological monitoring using rolling baseline buffers (HR, MAP, SpO2, RR, BT).
-   - Enforces persistence durations before triggering escalations.
+   - Performs continuous patient-specific physiological monitoring using rolling baseline buffers (HR, MAP, SpO2, RR).
+   - Differentiates physiological deviations from sensor disconnects (`max_missing_samples = 15`).
    - **Adaptive Execution Gatekeeper**: Completely bypasses downstream ML/LLM execution when vitals are stable, conserving computational resources.
 
 2. **Risk Agent**:
-   - Evaluates multi-parameter physiological windows using a trained machine learning model (`RandomForestClassifier`, decision threshold: `0.16`).
-   - Requests analytical verification when predictions border decision boundaries or exhibit high variability.
+   - Evaluates multi-parameter physiological windows using a trained machine learning model (`ExtraTreesClassifier`, 54 features, decision threshold: `0.51`).
+   - Extracts real 5-minute statistical window features (mean, std, min, max, slope) from the buffered stream.
+   - Demographics (age, sex, BMI, ASA physical status) are retrieved from clinical records with transparent missingness handling.
 
 3. **Data Analysis Agent**:
-   - Computes statistical metrics (variance, rate of change, correlation) without diagnostic interpretation.
-   - Detects compromised data quality (sensor disconnect, excessive motion artifact) and marks cross-agent consistency flags (`CONSISTENT`, `CONFLICTING`, `UNCERTAIN`).
+   - Computes statistical metrics (variance, rate of change, direction) without diagnostic bias.
+   - Differentiates isolated transient sensor spikes and high-frequency noise from sustained multi-vital physiological collapse.
+   - Performs cross-agent consistency verification (`SUPPORTING`, `CONFLICTING`, `UNCERTAIN`) and issues bounded challenge-response negotiations (capped at 1 round).
 
 4. **Clinical Reasoning Agent**:
-   - Synthesizes physiological trends, ML predictions, and statistical evidence.
-   - Incorporates **Medical RAG** (Retrieval-Augmented Generation) against verified clinical guidelines.
-   - Invokes **Google Gemini 2.5 Flash** (with robust deterministic fallback if offline) to produce structured clinical summaries, findings, and priority rankings (`URGENT`, `ELEVATED`, `ROUTINE`).
+   - Synthesizes physiological trajectories, risk predictions, and analytical evidence.
+   - Incorporates **Medical RAG** querying the NCBI PubMed E-utilities API in real time, with automatic fallback to curated clinical guidelines (Surviving Sepsis, NEWS2, ASA monitoring guidelines).
+   - Formulates non-diagnostic assessments using Google Gemini (with deterministic safety arbitration ensuring the LLM can never downgrade a deterministic safety escalation).
 
 5. **Care Coordination Agent** *(Non-diagnostic workflow orchestration)*:
    - Evaluates validated clinical reasoning evidence against transparent, deterministic clinical action policies.
-   - Generates actionable clinical workflow tasks:
-     - `TRIGGER_URGENT_CLINICAL_ALERT`: Immediate bedside clinician notification & rapid response activation.
-     - `SCHEDULE_CLINICIAN_REVIEW`: Routine or elevated physician evaluation within 30 minutes.
-     - `REQUEST_DATA_VERIFICATION`: Bedside sensor inspection and manual vital signs check (prevents false-alarm panic during sensor disconnects).
-     - `CONTINUE_ROUTINE_MONITORING`: Standard inpatient surveillance.
-   - Compiles structured **Actionable Order Sets** (IV access, labs, 12-lead ECG, telemetry frequency).
-   - Enforces **Task & Alert Deduplication** to eliminate alarm fatigue.
+   - Dispatches actionable workflow pathways:
+     - `TRIGGER_URGENT_CLINICAL_ALERT`: Immediate bedside clinician notification & rapid response activation for acute collapse.
+     - `SCHEDULE_CLINICIAN_REVIEW`: Scheduled physician clinical review within 30 minutes for discordant evidence or moderate deterioration.
+     - `REQUEST_DATA_VERIFICATION`: Bedside sensor inspection, electrode check, and manual vitals measurement for sensor noise or disconnects.
+     - `CONTINUE_ROUTINE_MONITORING`: Standard continuous floor/ICU surveillance for stable patients.
+   - Compiles structured **Actionable Order Sets** and enforces **Alert Deduplication**.
 
 6. **Agent Supervisor**:
-   - Independent background monitor thread tracking thread liveness and periodic heartbeats.
+   - Independent background monitor thread tracking agent health and periodic idle heartbeats.
    - Automatically detects stale or frozen workers and orchestrates graceful restarts with state restoration.
 
 ---
 
-## 2. Continuous Telemetry Stream & Realistic Scenarios
+## 2. Dataset and Reproducible Model Training
 
-The `carematrix_runtime` simulates multi-bed inpatient telemetry across 7 physiological scenarios:
+CareMatrix trains its risk model strictly on real surgical patient cases from the **VitalDB** open dataset:
+- **Cohort**: 160 surgical cases partitioned into strictly disjoint case-level splits: **112 train cases** (1,333 windows), **24 validation cases** (288 windows), and **24 test cases** (282 windows).
+- **Vitals**: 7 synchronized physiological tracks (`HR`, `SpO2`, `RR`, `NIBP_SBP`, `NIBP_DBP`, `NIBP_MBP`, `BT`).
+- **NIBP Processing**: Bounded forward-fill hold (maximum 300 seconds) with explicit staleness flags (`nibp_stale`, `nibp_age_seconds`) avoiding unphysiological interpolation.
+- **Model Selection**: 7 candidate architectures evaluated on the validation split; `ExtraTreesClassifier` selected based on optimal validation PR-AUC (`0.3236`) and ROC-AUC (`0.7711`) at threshold `0.51`.
+- **Test Set Performance**: ROC-AUC: **0.7397**, PR-AUC: **0.2285**, Sensitivity: **0.6087**, Specificity: **0.7413**.
 
-| Scenario | Physiological Dynamics | Clinical Response |
-| :--- | :--- | :--- |
-| `STABLE` | Normal vitals with micro-variations | Gatekeeper bypasses downstream ML/LLM |
-| `GRADUAL_DETERIORATION` | Tachycardia + hypotension + tachypnea | High risk → URGENT alert & Rapid Response order set |
-| `SUDDEN_ABNORMALITY` | Acute collapse (extreme desat / drop in MAP) | Immediate bedside clinical alert |
-| `RECOVERY` | Normalization of physiological indicators | Automatically transitions alerts to `RESOLVED` |
-| `NOISY_SENSOR` | Severe high-frequency variance / spikes | Flags `DATA_QUALITY_COMPROMISED` → Data verification request |
-| `MISSING_DATA` | Leads disconnected / partial missing channels | Bedside sensor check order set |
-| `PERSISTENT_ABNORMALITY` | Sustained elevation / depression | Deduplication suppresses duplicate alarm spam |
+To retrain the model and regenerate all validation figures:
+```bash
+python3 scripts/train_risk_model.py
+```
 
----
-
-## 3. Web Dashboard & REST API
-
-The prototype provides a modern, responsive Clinician Dashboard served at `http://localhost:5050/`.
-**Zero Node.js/npm dependencies** — operates purely via Python Flask + CDN-delivered React 18, Tailwind CSS, and Chart.js.
-
-### Key Dashboard Capabilities:
-- **Multi-Bed Strip**: Live overview of Bed 101, Bed 102, Bed 103 with live status badges.
-- **Continuous Telemetry Monitor**: Large vital signs monitors (HR, MAP, SpO2, RR) with color-coded warning thresholds.
-- **Real-Time Rolling Waveform**: Smooth Chart.js canvas plotting multi-trace vital trends via Server-Sent Events.
-- **5-Agent Autonomous Trace**: Transparent view into each agent's live state, model probability, and reasoning citations.
-- **Actionable Order Set**: Interactive checklist of suggested orders generated by the Care Coordination Agent.
-- **Clinical Alert Center**: Interactive alert state machine (`NEW → ACTIVE → ACKNOWLEDGED → RESOLVED`) with 1-click clinician acknowledgment.
-- **Live Scenario Injector**: Inject any of the 7 clinical scenarios in real time with immediate physiological response.
-
-### API Endpoints:
-- `GET /api/health`: Supervisor snapshot across all 5 agents and runtime metrics.
-- `GET /api/metrics`: Operational metrics, agent latencies, and adaptive bypass ratios.
-- `GET /api/patients`: Summary list of all monitored beds.
-- `GET /api/patients/<id>`: Full multi-agent provenance and state for a specific patient.
-- `GET /api/patients/<id>/vitals?limit=60`: Time series telemetry buffer for charting.
-- `GET /api/alerts`: Active and historical clinical alerts.
-- `POST /api/alerts/<id>/acknowledge`: Clinician acknowledgment of an alert.
-- `POST /api/alerts/<id>/resolve`: Manual or clinical resolution of an alert.
-- `POST /api/scenarios/trigger`: Dynamically switch clinical scenarios (`{"patient_id": 101, "scenario": "GRADUAL_DETERIORATION"}`).
-- `GET /api/events/stream`: Server-Sent Events (SSE) live push stream.
+Generated training figures are saved to `docs/figures/`:
+- `roc_curve.png`
+- `pr_curve.png`
+- `confusion_matrix.png`
+- `feature_importance.png`
+- `validation_model_comparison.png`
 
 ---
 
-## 4. Empirical Evaluation & Mode Comparison
+## 3. Empirical Evaluation Findings
 
-CareMatrix includes an automated research evaluation suite that benchmarks the 5-agent pipeline across all 7 clinical scenarios and quantifies the computational workload reduction achieved by the Adaptive Execution Gatekeeper:
-
+Run the full evaluation benchmark:
 ```bash
 python3 run_evaluation.py
 ```
 
-### Empirical Results Summary:
+### 3.1 Adaptive Gatekeeper (Mode B vs Mode A)
+Comparing CareMatrix's Adaptive Gatekeeper against an Always-On Full Pipeline on identical mixed telemetry:
+- **Downstream Calls Avoided**: **396 / 500** calls avoided (**79.2% workload reduction**).
+- **Throughput Speedup**: **2.0x wall-clock speedup** during mixed monitoring.
+- *Figure Reference: `docs/figures/mode_a_vs_mode_b_comparison.png`*
 
-| Scenario | Detection Step | Full 5-Agent Chain | Action Generated | Alert Lifecycle |
-| :--- | :---: | :---: | :--- | :--- |
-| `STABLE` | None (Bypassed) | Bypassed | `NONE` | 0 Alerts (Gatekeeper active) |
-| `GRADUAL_DETERIORATION` | Step 52 | Executed | `REQUEST_DATA_VERIFICATION` | 1 Active Alert |
-| `SUDDEN_ABNORMALITY` | Step 24 | Executed | `REQUEST_DATA_VERIFICATION` | 1 Lifecycle Alert |
-| `RECOVERY` | Step 20 | Executed | `REQUEST_DATA_VERIFICATION` | Alert Resolved |
-| `NOISY_SENSOR` | Step 56 | Executed | `REQUEST_DATA_VERIFICATION` | Flagged & Verified |
-| `MISSING_DATA` | None (Safe) | Bypassed | `NONE` | Handled NaN safely |
-| `PERSISTENT_ABNORMALITY` | Step 20 | Executed | `REQUEST_DATA_VERIFICATION` | Deduplication active |
+### 3.2 Real VitalDB Test Cohort (24 Cases, 4.0 Hours)
+Benchmarked against objective independent clinical deterioration criteria (sustained hypotension MAP < 65 for $\ge 60$s, desaturation SpO2 < 90% for $\ge 30$s, tachycardia HR > 120 for $\ge 60$s):
+- **Cohort Sensitivity**: **85.7%** (6 of 7 reference episodes detected).
+- **False Alarm Rate**: **3.5 false alarms per monitoring hour**.
+- **Mean Advance Warning Lead Time**: **165.0 seconds** prior to reference threshold breach.
 
-### Mode A (Exhaustive) vs Mode B (Adaptive Gatekeeper):
-- **Mode A (Always-On Baseline)**: 500 total agent executions
-- **Mode B (CareMatrix Adaptive)**: 104 total agent executions
-- **Unnecessary Executions Avoided**: 396
-- **Workload Reduction**: **79.2%**
+### 3.3 Clinical Simulation Scenarios
+| Scenario | Abnormality Detected | Detection Step | Risk Probability | Feature Source | Quality | Consistency | Care Action Pathway |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `STABLE` | NO | — | — | none | OK | N/A | `NONE` (Bypassed) |
+| `GRADUAL_DETERIORATION` | YES | Step 45 | 0.2225 | window | OK | CONFLICTING | `REQUEST_DATA_VERIFICATION` |
+| `SUDDEN_ABNORMALITY` | YES | Step 24 | 0.2256 | window | OK | CONFLICTING | `TRIGGER_URGENT_CLINICAL_ALERT` |
+| `RECOVERY` | YES | Step 20 | 0.2323 | window | OK | CONFLICTING | `REQUEST_DATA_VERIFICATION` |
+| `NOISY_SENSOR` | YES | Step 41 | 0.2331 | window | FLAGGED | UNCERTAIN | `REQUEST_DATA_VERIFICATION` |
+| `MISSING_DATA` | NO | — | — | none | OK | N/A | `NONE` (Bypassed) |
+| `PERSISTENT_ABNORMALITY` | YES | Step 20 | 0.2517 | window | OK | CONFLICTING | `TRIGGER_URGENT_CLINICAL_ALERT` |
 
 ---
 
-## 5. How to Run
+## 4. How to Run
 
 ### 1. Launch Continuous Live Prototype & Clinician Dashboard
 ```bash
@@ -173,38 +157,33 @@ python3 run_live_prototype.py --port 5050 --open-browser
 ```
 Open **http://localhost:5050/** in your browser.
 
-### 2. Run Autonomous Research Evaluation Suite
+### 2. Run Comprehensive Research Evaluation Suite
 ```bash
 python3 run_evaluation.py
 ```
+Outputs `evaluation_results.json`, terminal summary tables, and charts in `docs/figures/`.
 
-### 3. Run Terminal Multi-Agent Demonstration (VitalDB Dataset Cases)
-Run the full 5-agent pipeline demonstration on synthetic Case 0 or real VitalDB Case 4:
+### 3. Run Live Multi-Agent Replay on Real VitalDB Test-Split Cases
 ```bash
-# Synthetic test case
-python3 run_carematrix.py --case-id 0 --samples 100 --delay 0 --agent-demo
-
-# VitalDB Case 4 (Perioperative patient dataset)
-python3 run_carematrix.py --case-id 4 --samples 100 --start-sample 800 --delay 0 --agent-demo
+# Replay real test-split case 242 (perioperative patient telemetry)
+python3 run_carematrix.py --case-id 242 --samples 100 --start-sample 800 --delay 0 --agent-demo
 ```
 
-### 4. Run Test Suite
-Run the complete unit, alert lifecycle, server API, multi-patient isolation, and supervisor recovery test suite:
+### 4. Run Complete Unit and Architecture Test Suite
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
 ---
 
-## 5. Environment Variables (Optional Gemini LLM Integration)
+## 5. Environment Variables (Optional Gemini LLM & PubMed Integration)
 
-CareMatrix includes deterministic fallback rules for all agents and operates without an internet connection or external API keys.
+CareMatrix functions completely offline out of the box using deterministic safety rules, local scikit-learn models, and curated clinical guidelines.
 
-To enable **Google Gemini 2.5 Flash** for clinical reasoning synthesis:
+To enable live Google Gemini LLM synthesis and NCBI PubMed retrieval:
 ```bash
-export GEMINI_API_KEY="your-gemini-api-key-here"
-```
-Or create a `.env` file in the root directory:
-```bash
-echo 'GEMINI_API_KEY="your-gemini-api-key-here"' > .env
+# .env file
+GEMINI_API_KEY="your-gemini-api-key-here"
+NCBI_API_KEY="optional-ncbi-api-key"
+NCBI_CONTACT_EMAIL="clinical-team@carematrix.local"
 ```

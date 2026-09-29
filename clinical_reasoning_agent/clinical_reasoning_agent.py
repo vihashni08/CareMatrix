@@ -101,11 +101,18 @@ class ClinicalReasoningAgent:
     # ------------------------------------------------------------------------
     def process_event(self, event: DataAnalysisEvent) -> ClinicalReasoningEvent:
         """Execute one autonomous clinical reasoning cycle."""
+        t_start = time.perf_counter()
         case_id = int(getattr(event, "case_id", 0) or 0)
         event_id = str(getattr(event, "event_id", "unknown_analysis_event"))
         timestamp = float(getattr(event, "timestamp", 0.0) or 0.0)
         risk_level = str(getattr(event, "risk_level", "INDETERMINATE"))
         quality_flag = bool(getattr(event, "data_quality_flag", False))
+
+        prev_cumulative = (
+            float((event.metadata or {}).get("cumulative_latency_ms", 0.0) or 0.0)
+            if hasattr(event, "metadata") and isinstance(event.metadata, dict)
+            else 0.0
+        )
 
         # 1. RECEIVE & HEARTBEAT
         state = self.patient_states.setdefault(case_id, ClinicalReasoningState(case_id=case_id))
@@ -348,6 +355,14 @@ class ClinicalReasoningAgent:
                 },
             )
             state.record_assessment(event_id, timestamp, priority, risk_level, summary, result.findings, actions)
+
+        # Record stage latency and cumulative latency
+        reasoning_latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
+        meta = dict(result.metadata) if hasattr(result, "metadata") and isinstance(result.metadata, dict) else {}
+        meta["stage_latency_ms"] = reasoning_latency_ms
+        meta["reasoning_latency_ms"] = reasoning_latency_ms
+        meta["cumulative_latency_ms"] = round(prev_cumulative + reasoning_latency_ms, 2)
+        result.metadata = meta
 
         if self.verbose:
             mode = result.metadata.get("reasoning_mode", "DETERMINISTIC")

@@ -25,6 +25,7 @@ __pycache__/
 data/processed/*.png
 data/processed/*.csv
 data/raw/
+data/vitaldb_cache/
 
 # Generated evaluation and test artifacts
 evaluation_results.json

@@ -210,6 +210,7 @@ class MonitoringAgent:
             raise RuntimeError(f"Simulated unhandled MonitoringAgent exception at sample {curr_obs}")
 
         # 1. OBSERVE & UPDATE STATE
+        t_start = time.perf_counter()
         if isinstance(sample, pd.Series):
             sample_dict = sample.to_dict()
             if sample.name is not None and "timestamp" not in sample_dict:
@@ -279,6 +280,14 @@ class MonitoringAgent:
                 llm_proposal=llm_proposal,
                 fallback_error=fallback_err,
             )
+
+        if event is not None:
+            stage_latency_ms = round((time.perf_counter() - t_start) * 1000, 2)
+            meta = dict(event.metadata) if hasattr(event, "metadata") and event.metadata else {}
+            meta["stage_latency_ms"] = stage_latency_ms
+            meta["monitoring_latency_ms"] = stage_latency_ms
+            meta["cumulative_latency_ms"] = stage_latency_ms
+            event.metadata = meta
 
         if pid == self.case_id:
             self.last_decision = decision

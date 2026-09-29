@@ -25,9 +25,11 @@ class MonitoringDecisionEngine:
         self,
         cooldown_seconds: int = ALERT_COOLDOWN_SECONDS,
         recovery_duration_seconds: int = RECOVERY_DURATION_SECONDS,
+        max_missing_samples: int = 15,
     ):
         self.cooldown_seconds = cooldown_seconds
         self.recovery_duration_seconds = recovery_duration_seconds
+        self.max_missing_samples = max_missing_samples
 
     def evaluate(
         self,
@@ -245,6 +247,62 @@ class MonitoringDecisionEngine:
                 },
             )
 
+            return MonitoringDecision.ESCALATE_TO_RISK, monitoring_event, context
+
+        # Case B2: Sustained sensor disconnect / missing data alert
+        elif (
+            state.active_event_id is None
+            and current_sample_idx >= state.cooldown_until_sample
+            and any(state.consecutive_missing_samples.get(v, 0) >= self.max_missing_samples for v in VITAL_COLUMNS)
+        ):
+            disconnected = [
+                v for v in VITAL_COLUMNS
+                if state.consecutive_missing_samples.get(v, 0) >= self.max_missing_samples
+            ]
+            event_numeric_id = state.next_event_id
+            state.next_event_id += 1
+            state.active_event_id = event_numeric_id
+            state.active_event_state = "alert_started"
+            state.total_escalations += 1
+
+            reason = (
+                f"Sustained sensor disconnect/missingness on {', '.join(disconnected)} "
+                f"(>={self.max_missing_samples} consecutive samples)"
+            )
+            event_id = f"case_{state.case_id}_event_{event_numeric_id:03d}"
+            monitoring_event = MonitoringEvent(
+                patient_id=state.case_id,
+                event_id=event_id,
+                timestamp=timestamp,
+                event_type="alert_started",
+                severity="moderate",
+                affected_vitals=disconnected,
+                current_values={v: 0.0 for v in disconnected},
+                baseline_values={v: float(latest_baselines.get(v, 0.0)) for v in disconnected},
+                deviation_values={v: 0.0 for v in disconnected},
+                trends={v: "sensor_disconnected" for v in disconnected},
+                signal_quality={v: "disconnected" for v in disconnected},
+                persistence_duration=int(self.max_missing_samples * 5),
+                recommended_action="verify_sensor_integrity",
+                vital_details={
+                    v: {
+                        "current": 0.0,
+                        "baseline": float(latest_baselines.get(v, 0.0)),
+                        "severity": "moderate",
+                        "signal_quality": "disconnected",
+                    }
+                    for v in disconnected
+                },
+                vital_summary={},
+                metadata={
+                    "start_timestamp": timestamp,
+                    "reason": reason,
+                    "consecutive_samples": max(state.consecutive_missing_samples.get(v, 0) for v in disconnected),
+                    "data_quality_flag": True,
+                    "verification_required": True,
+                    "sensor_disconnected": True,
+                },
+            )
             return MonitoringDecision.ESCALATE_TO_RISK, monitoring_event, context
 
         # Case C: Deviating but not yet persistent, or baseline establishing, or normal

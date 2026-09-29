@@ -239,7 +239,7 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
 
     @app.route("/api/scenarios/trigger", methods=["POST"])
     def trigger_scenario():
-        """Dynamically switch simulation scenario for a patient."""
+        """Dynamically switch simulation scenario for a patient (Optional Fault Injection — Synthetic Only)."""
         rt: CareMatrixRuntime = app.config["RUNTIME"]
         data = request.get_json(silent=True) or {}
 
@@ -262,7 +262,7 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
 
         success = rt.trigger_scenario(patient_id, scenario_enum)
         if not success:
-            return jsonify({"error": f"Patient {patient_id} not registered in simulator"}), 404
+            return jsonify({"error": f"Patient {patient_id} not registered in simulator (fault injection applies only to synthetic test beds)"}), 404
 
         _broadcast_sse("scenario_changed", {
             "patient_id": patient_id,
