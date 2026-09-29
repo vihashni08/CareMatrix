@@ -170,7 +170,7 @@ class TestMedicalRAG(unittest.TestCase):
     # 4. Relevant clinical query retrieves matching guidance
     def test_4_relevant_clinical_query_retrieves_matching_guidance(self):
         """Tachycardia and hypotension query retrieves shock/hemodynamic instability guideline."""
-        retriever = MedicalRetriever(min_similarity=0.10)
+        retriever = MedicalRetriever(min_similarity=0.10, enable_pubmed=False)
         query = "hypotension arterial pressure MAP shock fluid resuscitation"
         result = retriever.retrieve(query, top_k=2)
 
@@ -192,7 +192,7 @@ class TestMedicalRAG(unittest.TestCase):
     # 6. Metadata preservation on retrieved passages
     def test_6_metadata_preservation_on_retrieved_passages(self):
         """Retrieved passages preserve doc_id, title, section, and similarity_score."""
-        retriever = MedicalRetriever(min_similarity=0.05)
+        retriever = MedicalRetriever(min_similarity=0.05, enable_pubmed=False)
         result = retriever.retrieve("acute hypoxia oxygen desaturation SpO2", top_k=1)
 
         self.assertEqual(result.retrieval_status, "SUCCESS")
@@ -208,7 +208,7 @@ class TestMedicalRAG(unittest.TestCase):
         """Retriever with empty document list handles search gracefully without crash."""
         empty_loader = MagicMock()
         empty_loader.load_documents.return_value = []
-        retriever = MedicalRetriever(loader=empty_loader, min_similarity=0.1)
+        retriever = MedicalRetriever(loader=empty_loader, min_similarity=0.1, enable_pubmed=False)
 
         result = retriever.retrieve("hemodynamic shock", top_k=3)
         self.assertEqual(result.retrieval_status, "NO_RELEVANT_EVIDENCE")
@@ -217,7 +217,7 @@ class TestMedicalRAG(unittest.TestCase):
     # 8. Retriever failure handling with graceful fallback
     def test_8_retriever_failure_handling_with_graceful_fallback(self):
         """Retriever exception triggers RETRIEVAL_FAILED status without crashing."""
-        retriever = MedicalRetriever()
+        retriever = MedicalRetriever(enable_pubmed=False)
         with patch.object(retriever.vector_store, "search", side_effect=RuntimeError("Store corruption")):
             result = retriever.retrieve("tachycardia", top_k=2)
             self.assertEqual(result.retrieval_status, "RETRIEVAL_FAILED")
@@ -226,7 +226,7 @@ class TestMedicalRAG(unittest.TestCase):
     # 9. No relevant evidence produces retrieval_status="NO_RELEVANT_EVIDENCE"
     def test_9_no_relevant_evidence_status(self):
         """When similarity scores are below threshold, result is NO_RELEVANT_EVIDENCE."""
-        retriever = MedicalRetriever(min_similarity=0.99)  # impossibly high threshold
+        retriever = MedicalRetriever(min_similarity=0.99, enable_pubmed=False)  # impossibly high threshold
         result = retriever.retrieve("hemodynamics", top_k=2)
         self.assertEqual(result.retrieval_status, "NO_RELEVANT_EVIDENCE")
         self.assertEqual(len(result.passages), 0)
@@ -363,7 +363,8 @@ class TestMedicalRAG(unittest.TestCase):
         self.assertEqual(output.reasoning_mode, ReasoningMode.LLM_ASSISTED.value)
 
     # 14. End-to-end integration: ClinicalReasoningAgent emits reasoning_mode="LLM_RAG" with citations
-    def test_14_end_to_end_agent_emits_llm_rag_with_citations(self):
+    @patch("clinical_reasoning_agent.rag.pubmed_client.fetch_pubmed_abstracts", return_value=None)
+    def test_14_end_to_end_agent_emits_llm_rag_with_citations(self, _mock_pubmed):
         """ClinicalReasoningAgent processes DataAnalysisEvent, runs RAG, and emits ClinicalReasoningEvent with LLM_RAG."""
         mock_client = MagicMock()
         mock_interaction = MagicMock()

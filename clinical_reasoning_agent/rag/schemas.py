@@ -78,9 +78,10 @@ class RetrievalResult:
 
     query: str
     passages: list[RetrievedPassage] = field(default_factory=list)
-    retrieval_status: str = "NO_RELEVANT_EVIDENCE"  # "SUCCESS", "NO_RELEVANT_EVIDENCE", "ERROR"
+    retrieval_status: str = "NO_RELEVANT_EVIDENCE"  # "SUCCESS", "NO_RELEVANT_EVIDENCE", "RETRIEVAL_FAILED"
     top_score: float = 0.0
     error_message: str | None = None
+    retrieval_source: str = "curated_fallback"  # "pubmed" | "curated_fallback"
 
     @property
     def has_evidence(self) -> bool:

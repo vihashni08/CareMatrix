@@ -278,7 +278,8 @@ class TestLLMClinicalReasoning(unittest.TestCase):
         self.assertIn("Critical cardiovascular instability", decision.clinical_summary)
 
     # 9. Low-risk + stable evidence via LLM
-    def test_9_low_risk_stable_evidence_llm(self):
+    @patch("clinical_reasoning_agent.rag.pubmed_client.fetch_pubmed_abstracts", return_value=None)
+    def test_9_low_risk_stable_evidence_llm(self, _mock_pubmed):
         """LOW RISK with stable vitals produces LLM-assisted ROUTINE monitoring decision."""
         mock_client = MagicMock()
         mock_interaction = MagicMock()
@@ -311,7 +312,8 @@ class TestLLMClinicalReasoning(unittest.TestCase):
         self.assertFalse(decision.metadata.get("llm_reasoning_conflict"))
 
     # 10. High-risk + conflicting evidence maintains verification_required=True
-    def test_10_high_risk_conflicting_evidence_preserves_verification(self):
+    @patch("clinical_reasoning_agent.rag.pubmed_client.fetch_pubmed_abstracts", return_value=None)
+    def test_10_high_risk_conflicting_evidence_preserves_verification(self, _mock_pubmed):
         """HIGH RISK with conflicting evidence enforces verification_required=True regardless of LLM."""
         mock_client = MagicMock()
         mock_interaction = MagicMock()
