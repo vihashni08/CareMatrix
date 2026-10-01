@@ -208,3 +208,4 @@ Or create a `.env` file in the root directory:
 ```bash
 echo 'GEMINI_API_KEY="your-gemini-api-key-here"' > .env
 ```
+# CareMatrix---FYP
