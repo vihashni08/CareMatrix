@@ -43,6 +43,16 @@ class LLMReasoningResult:
     retrieved_evidence: list[str] = field(default_factory=list)
     retrieval_status: str = "NO_RELEVANT_EVIDENCE"
     raw_response: str | None = None
+    # Rich Clinical Intelligence Report fields
+    executive_summary: str = ""
+    clinical_status: dict[str, Any] = field(default_factory=dict)
+    physiological_analysis: list[str] = field(default_factory=list)
+    temporal_analysis: list[str] = field(default_factory=list)
+    evidence_synthesis: str = ""
+    medical_evidence: list[dict[str, Any]] = field(default_factory=list)
+    clinical_interpretation: str = ""
+    monitoring_priorities: list[str] = field(default_factory=list)
+    escalation_rationale: str = ""
 
 
 __all__ = [

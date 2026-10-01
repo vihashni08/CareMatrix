@@ -167,7 +167,7 @@ class DataAnalysisEvent:
 
 @dataclass
 class ClinicalReasoningEvent:
-    """Structured, non-diagnostic clinical synthesis and prioritized recommendations."""
+    """Structured, non-diagnostic clinical synthesis, evidence report, and prioritized recommendations."""
 
     case_id: int
     event_id: str
@@ -186,15 +186,56 @@ class ClinicalReasoningEvent:
     supporting_evidence: list[str] = field(default_factory=list)
     conflicting_evidence: list[str] = field(default_factory=list)
     verification_required: bool = False
+    # Rich Clinical Intelligence Report fields
+    executive_summary: str = ""
+    clinical_status: dict[str, Any] = field(default_factory=dict)
+    key_findings: list[str] = field(default_factory=list)
+    physiological_analysis: list[str] = field(default_factory=list)
+    temporal_analysis: list[str] = field(default_factory=list)
+    risk_interpretation: str = ""
+    evidence_synthesis: str = ""
+    medical_evidence: list[dict[str, Any]] = field(default_factory=list)
+    clinical_interpretation: str = ""
+    uncertainties: list[str] = field(default_factory=list)
+    monitoring_priorities: list[str] = field(default_factory=list)
+    escalation_rationale: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     performative: str = PerformativeType.INFORM.value
     challenge_round: int = 0
     message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: float = field(default_factory=time.time)
 
+    def to_clinical_report(self) -> dict[str, Any]:
+        """Return the structured 15-section Clinical Intelligence Report."""
+        return {
+            "executive_summary": self.executive_summary or self.clinical_summary,
+            "clinical_status": self.clinical_status or {
+                "risk_level": self.risk_level,
+                "priority": self.priority,
+                "confidence": self.confidence,
+                "data_reliability": self.data_reliability,
+                "evidence_consistency": self.evidence_consistency,
+            },
+            "key_findings": self.key_findings or self.findings,
+            "physiological_analysis": self.physiological_analysis,
+            "temporal_analysis": self.temporal_analysis,
+            "risk_interpretation": self.risk_interpretation,
+            "supporting_evidence": self.supporting_evidence,
+            "conflicting_evidence": self.conflicting_evidence,
+            "evidence_synthesis": self.evidence_synthesis or self.clinical_summary,
+            "medical_evidence": self.medical_evidence,
+            "clinical_interpretation": self.clinical_interpretation or self.clinical_summary,
+            "uncertainties": self.uncertainties,
+            "recommended_actions": self.recommended_actions,
+            "monitoring_priorities": self.monitoring_priorities,
+            "escalation_rationale": self.escalation_rationale,
+            "confidence": self.confidence,
+        }
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["patient_id"] = self.case_id
+        d["clinical_report"] = self.to_clinical_report()
         return d
 
 

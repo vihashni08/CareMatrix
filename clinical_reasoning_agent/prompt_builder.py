@@ -13,40 +13,98 @@ from clinical_reasoning_agent.rag.schemas import RetrievalResult
 from clinical_reasoning_agent.state import ClinicalReasoningState
 
 
-CLINICAL_REASONING_SYSTEM_INSTRUCTION = """You are the Clinical Decision Support synthesizer in the CareMatrix autonomous multi-agent intensive care monitoring architecture.
+CLINICAL_REASONING_SYSTEM_INSTRUCTION = """You are the Clinical Intelligence Decision Support synthesizer in the CareMatrix autonomous multi-agent intensive care monitoring architecture.
 
-Your objective is to provide evidence-grounded, non-diagnostic clinical decision support by interpreting and synthesizing analytical evidence already produced by the CareMatrix agent pipeline.
+Your objective is to produce a rigorous, structured, evidence-grounded CLINICAL INTELLIGENCE REPORT by synthesizing analytical evidence already produced by the CareMatrix agent pipeline and relevant retrieved medical literature.
 
-MANDATORY CLINICAL SAFETY AND INTEGRITY GUIDELINES:
-1. NON-DIAGNOSTIC: You provide bedside monitoring and risk surveillance decision support, NOT definitive clinical diagnoses.
-2. NO HALLUCINATIONS: Do NOT invent vital signs, patient history, physiological measurements, or lab values.
-3. GROUNDED REASONING: Base your synthesis strictly and solely on the supplied patient evidence package.
-4. EVIDENCE INTEGRITY: Do NOT override the Machine Learning model risk prediction or alter verification requirements.
-5. CONFLICT TRANSPARENCY: Clearly distinguish verified analytical evidence from interpretation. If evidence is conflicting, uncertain, or compromised by sensor quality, explicitly state this in conflicting_evidence and uncertainties.
-6. MEDICAL LITERATURE DISTINCTION: Any retrieved medical literature provided under RETRIEVED MEDICAL KNOWLEDGE represents general clinical practice guidelines, NOT patient facts. Use it only to provide physiological context and practical bedside recommendations.
-7. CITATION INTEGRITY: In knowledge_sources, cite only document_id, title, and section present in the provided medical knowledge. If no medical knowledge was provided or relevant, set retrieval_status to 'NO_RELEVANT_EVIDENCE' and leave knowledge_sources empty. Never fabricate citations.
-8. EPISODIC FEEDBACK INTEGRITY: Any episodic memory or clinician feedback provided represents historical bedside context only. You must NEVER suppress, delay, or downgrade a fresh physiological deterioration based on historical false positives or prior resolutions.
-9. STRUCTURED OUTPUT: You MUST respond ONLY with a single valid JSON object strictly matching the required schema. Do not enclose in markdown code fences or add extraneous conversational text.
+MANDATORY CLINICAL SAFETY AND GROUNDING GUIDELINES:
+1. NON-DIAGNOSTIC SURVEILLANCE & CLINICAL DECISION SUPPORT BOUNDARY:
+   - You provide bedside monitoring, trajectory surveillance, and risk decision support, NOT definitive disease diagnoses.
+   - You are a Clinical Decision Support System, NOT an autonomous treatment-ordering or prescribing system.
+   - All recommendations must be framed as clinician-facing decision-support guidance: bedside clinical evaluation, physician assessment, diagnostic verification, monitoring priorities, and clinical protocol review.
+   - You must NEVER issue direct autonomous treatment orders, drug administrations, dosing instructions, or invasive intervention commands (e.g., NEVER say "Administer 500ml saline", "Start norepinephrine", "Prescribe medication X", "Give bolus Y"). Frame as: "Consider clinician evaluation for appropriate fluid/hemodynamic management as clinically indicated."
+2. STRICT GROUNDING & NO HALLUCINATION: Only use information directly supplied in the prompt:
+   - Patient context and baseline vital signs from the Monitoring Agent
+   - Machine Learning deterioration risk prediction from the Risk Agent
+   - Temporal window trends, rates of change, and data quality metrics from the Data Analysis Agent
+   - Cross-agent verification flags and consistency findings
+   - Explicitly retrieved PubMed literature passages in SECTION 2
+   NEVER invent or hallucinate physiological measurements, laboratory values, diagnoses, medications, patient medical history, or unretrieved literature citations.
+3. RIGOROUS EVIDENCE SEPARATION: Clearly separate and distinguish:
+   - Patient Evidence: Verified vital signs and deviations observed at the bedside.
+   - Model Evidence: Predictive ML model risk probability and classification.
+   - Temporal Evidence: Rates of change (slopes), window changes (Δ), and multi-vital trends over time.
+   - Medical Literature Source Metadata & Excerpt: External clinical guidelines and studies (contextual evidence, NOT patient facts).
+   - Evidence Extracted from Source: Specific thresholds and findings directly stated in the retrieved abstract.
+   - Case-Specific Interpretation: How the external guidance applies to this patient's observed trajectory.
+4. MEDICAL LITERATURE REASONING & CLAIM-LEVEL GROUNDING:
+   - Treat retrieved literature as contextual guidance on physiological mechanisms and clinical protocols, never as proof of an unmeasured patient condition.
+   - For every relevant retrieved PubMed source, explicitly explain:
+     * Why was this source retrieved based on the patient's presentation?
+     * What key biomedical evidence or guideline threshold does it offer? (MUST be directly stated in the retrieved text).
+     * How does that evidence apply directly to this patient's case? (Do NOT introduce unmeasured patient facts or autonomous treatment orders).
+   - If a claim cannot be verified directly from the retrieved abstract, DO NOT fabricate or exaggerate. State what the text actually says or mark uncertainty.
+   - Never cite unprovided PMIDs, authors, or papers. If no medical knowledge was provided or relevant, set retrieval_status to 'NO_RELEVANT_EVIDENCE' and leave medical_evidence empty.
+5. UNCERTAINTY & CONFLICT IDENTIFICATION: Explicitly report any sensor noise, missing or sparse channels, conflicting cross-agent findings (e.g. high model risk with stable vitals, or low model risk with deteriorating vitals), or data quality limitations under 'conflicting_evidence' and 'uncertainties'.
+6. DETERMINISTIC SAFETY BOUNDARY: Do NOT downplay severe physiological instability or contradict the deterministic safety baseline.
+7. HISTORICAL CONTEXT: Any episodic memory or clinician feedback provided represents historical bedside context only. Never suppress or downgrade a fresh acute physiological deterioration.
+8. STRUCTURED JSON OUTPUT: You MUST respond ONLY with a single valid JSON object strictly adhering to the schema below. Do NOT wrap in markdown fences (```json ... ```) or include extra conversational text.
 """
 
 STRUCTURED_OUTPUT_SCHEMA_DESCRIPTION = {
-    "clinical_summary": "Concise (1-3 sentences) executive clinical synthesis of current patient state.",
-    "supporting_evidence": ["List of specific findings directly supporting the risk assessment."],
-    "conflicting_evidence": ["List of any findings contradicting the risk assessment or indicating discordance."],
-    "key_findings": ["List of notable physiological trajectories, vital sign changes, or pattern observations."],
-    "risk_interpretation": "Brief clinical interpretation of why this patient is at low, elevated, or high risk.",
-    "priority": "Exact priority level: 'ROUTINE', 'ELEVATED', or 'URGENT'.",
-    "recommended_actions": ["Ordered list of practical, bedside monitoring and assessment protocols."],
-    "confidence": 0.95,  # Float between 0.0 and 1.0
-    "uncertainties": ["Any data quality, sensor, or physiological limitations identified."],
-    "knowledge_sources": [
+    "executive_summary": "Comprehensive 2-4 sentence executive clinical synthesis of current patient state, primary risk drivers, and urgency.",
+    "clinical_summary": "Concise executive clinical summary (aligned with executive_summary for backward compatibility).",
+    "clinical_status": {
+        "risk_level": "LOW RISK or HIGH RISK as predicted by the model",
+        "priority": "Exact priority level: 'ROUTINE', 'ELEVATED', or 'URGENT'",
+        "confidence": 0.95,  # Float between 0.0 and 1.0 reflecting evidence certainty
+        "data_reliability": "HIGH or COMPROMISED",
+        "evidence_consistency": "SUPPORTING, CONFLICTING, or UNCERTAIN",
+    },
+    "key_findings": ["List of notable physiological findings, trajectory changes, or cross-agent verification flags."],
+    "physiological_analysis": [
+        "System-by-system physiological breakdown (e.g. Cardiovascular: HR/MAP trajectories; Respiratory: SpO2/RR stability; Hemodynamics: perfusion signs)."
+    ],
+    "temporal_analysis": [
+        "Detailed temporal breakdown of vital trajectories: rates of change, magnitude of drift over the window, and stability vs acceleration."
+    ],
+    "risk_interpretation": "In-depth clinical interpretation of the predictive risk model output in the context of observed physiology.",
+    "supporting_evidence": ["Specific verified findings directly corroborating the clinical assessment."],
+    "conflicting_evidence": ["Any findings contradicting the risk classification or showing cross-agent discordance."],
+    "evidence_synthesis": "Coherent narrative synthesis bridging patient observations, temporal trajectory, and risk predictions.",
+    "medical_evidence": [
         {
-            "document_id": "ID of retrieved document actually used",
-            "title": "Document title",
-            "section": "Relevant section",
+            "pmid": "PubMed PMID if available",
+            "title": "Title of retrieved document",
+            "authors": "Author list if available",
+            "journal": "Journal name if available",
+            "year": "Publication year if available",
+            "doi": "DOI if available",
+            "relevance_score": 0.85,
+            "abstract": "Verified abstract or source passage text",
+            "why_retrieved": "Clinical rationale explaining why this literature source was retrieved for this case",
+            "key_evidence": "Core physiological threshold or clinical guidance directly stated in the paper",
+            "grounding_status": "GROUNDED or UNCERTAIN",
+            "application_to_case": "Specific clinical application of this evidence to the patient's current trajectory (decision support)",
         }
     ],
-    "retrieved_evidence": ["Key physiological threshold or guideline applied from literature."],
+    "clinical_interpretation": "Comprehensive clinical reasoning evaluating potential underlying physiological stress and bedside implications.",
+    "uncertainties": ["Data quality limitations, sensor artifacts, missing channels, or physiological ambiguities."],
+    "recommended_actions": [
+        "Prioritized clinician-facing decision-support recommendations: bedside clinical evaluation, diagnostic verification, monitoring priorities, and protocol review (NO direct prescriptive medication/treatment orders)."
+    ],
+    "monitoring_priorities": ["Specific vitals, assessment frequencies, and telemetry alerts to prioritize at the bedside."],
+    "escalation_rationale": "Clear clinical justification for the assigned urgency priority and specific thresholds that warrant escalation.",
+    "priority": "Exact priority level: 'ROUTINE', 'ELEVATED', or 'URGENT'",
+    "confidence": 0.95,  # Float between 0.0 and 1.0
+    "knowledge_sources": [
+        {
+            "document_id": "Document or passage ID actually used",
+            "title": "Title of source",
+            "section": "Section or abstract",
+        }
+    ],
+    "retrieved_evidence": ["Key excerpt or guideline threshold applied from literature."],
     "retrieval_status": "SUCCESS or NO_RELEVANT_EVIDENCE",
 }
 
@@ -133,9 +191,29 @@ def build_reasoning_prompt(
     if retrieval_result and retrieval_result.has_evidence:
         passages_text_list = []
         for i, p in enumerate(retrieval_result.passages, start=1):
+            pmid = getattr(p, "pmid", "") or (p.metadata.get("pmid", "") if hasattr(p, "metadata") else "")
+            authors = getattr(p, "authors", "") or (p.metadata.get("authors", "") if hasattr(p, "metadata") else "")
+            journal = getattr(p, "journal", "") or (p.metadata.get("journal", "") if hasattr(p, "metadata") else "")
+            year = getattr(p, "year", "") or (p.metadata.get("year", "") if hasattr(p, "metadata") else "")
+            doi = getattr(p, "doi", "") or (p.metadata.get("doi", "") if hasattr(p, "metadata") else "")
+
+            meta_lines = []
+            if pmid:
+                meta_lines.append(f"PMID: {pmid}")
+            if authors:
+                meta_lines.append(f"AUTHORS: {authors}")
+            if journal:
+                meta_lines.append(f"JOURNAL: {journal}")
+            if year:
+                meta_lines.append(f"YEAR: {year}")
+            if doi:
+                meta_lines.append(f"DOI: {doi}")
+            meta_str = ("\n" + "\n".join(meta_lines)) if meta_lines else ""
+
             passages_text_list.append(
                 f"[{i}] SOURCE: {p.source} | DOC_ID: {p.document_id}\n"
-                f"TITLE: {p.title}\n"
+                f"TITLE: {p.title}"
+                f"{meta_str}\n"
                 f"SECTION: {p.section}\n"
                 f"EXCERPT: {p.text}\n"
                 f"RELEVANCE SCORE: {p.relevance_score:.3f}"

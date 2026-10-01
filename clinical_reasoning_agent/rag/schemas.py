@@ -61,15 +61,46 @@ class RetrievedPassage:
     def similarity_score(self) -> float:
         return self.relevance_score
 
+    @property
+    def pmid(self) -> str:
+        return str(self.metadata.get("pmid", "") or "")
+
+    @property
+    def authors(self) -> str:
+        return str(self.metadata.get("authors", "") or "")
+
+    @property
+    def journal(self) -> str:
+        return str(self.metadata.get("journal", "") or "")
+
+    @property
+    def year(self) -> str:
+        return str(self.metadata.get("year", "") or "")
+
+    @property
+    def doi(self) -> str:
+        return str(self.metadata.get("doi", "") or "")
+
     def to_citation_dict(self) -> dict[str, Any]:
-        """Convert passage to a lightweight citation reference for downstream records."""
-        return {
+        """Convert passage to a citation reference for downstream records."""
+        d = {
             "document_id": self.document_id,
             "title": self.title,
             "source": self.source,
             "section": self.section,
             "relevance_score": round(self.relevance_score, 3),
         }
+        if self.pmid:
+            d["pmid"] = self.pmid
+        if self.authors:
+            d["authors"] = self.authors
+        if self.journal:
+            d["journal"] = self.journal
+        if self.year:
+            d["year"] = self.year
+        if self.doi:
+            d["doi"] = self.doi
+        return d
 
 
 @dataclass

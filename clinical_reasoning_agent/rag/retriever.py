@@ -109,7 +109,8 @@ class MedicalRetriever:
         """
         try:
             from clinical_reasoning_agent.rag.pubmed_client import fetch_pubmed_abstracts  # noqa: PLC0415
-            abstracts = fetch_pubmed_abstracts(query, max_results=effective_top_k)
+            candidate_k = max(effective_top_k, 3)
+            abstracts = fetch_pubmed_abstracts(query, max_results=candidate_k)
         except Exception:
             # Import error, unexpected exception from the client, or any other failure.
             return None
@@ -124,6 +125,11 @@ class MedicalRetriever:
             abstract_text = ab.get("abstract", "")
             if not abstract_text:
                 continue
+            authors = ab.get("authors", "")
+            journal = ab.get("journal", "")
+            year = ab.get("year", "")
+            doi = ab.get("doi", "")
+            relevance_score = max(0.95 - i * 0.08, 0.50)
             passages.append(
                 RetrievedPassage(
                     document_id=f"PMID_{pmid}",
@@ -131,21 +137,28 @@ class MedicalRetriever:
                     source=f"PubMed PMID:{pmid}",
                     section="Abstract",
                     text=abstract_text,
-                    # NCBI ranks results by relevance; assign descending synthetic
-                    # scores so the first result is ranked highest.
-                    relevance_score=max(0.9 - i * 0.05, 0.5),
-                    metadata={"pmid": pmid, "retrieval_source": "pubmed"},
+                    relevance_score=relevance_score,
+                    metadata={
+                        "pmid": pmid,
+                        "retrieval_source": "pubmed",
+                        "authors": authors,
+                        "journal": journal,
+                        "year": year,
+                        "doi": doi,
+                    },
                 )
             )
 
         if not passages:
             return None
 
+        selected_passages = passages[:effective_top_k]
+
         return RetrievalResult(
             query=query,
-            passages=passages,
+            passages=selected_passages,
             retrieval_status="SUCCESS",
-            top_score=passages[0].relevance_score,
+            top_score=selected_passages[0].relevance_score,
             retrieval_source="pubmed",
         )
 

@@ -132,6 +132,47 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
         detail["data_source"] = rt.get_patient_data_source(patient_id)
         return jsonify(detail)
 
+    @app.route("/api/patients/<int:patient_id>/clinical-report", methods=["GET"])
+    def get_patient_clinical_report(patient_id: int):
+        """Structured Clinical Intelligence Report for a monitored patient."""
+        rt: CareMatrixRuntime = app.config["RUNTIME"]
+        detail = rt.state_manager.get_patient_detail(patient_id)
+        if detail is None:
+            return jsonify({"error": f"Patient {patient_id} not found"}), 404
+        latest_cr = detail.get("latest_clinical_reasoning") or {}
+        report = latest_cr.get("clinical_report")
+        if not report:
+            report = {
+                "executive_summary": latest_cr.get("executive_summary") or latest_cr.get("clinical_summary", "No clinical assessment recorded."),
+                "clinical_status": latest_cr.get("clinical_status") or {
+                    "risk_level": latest_cr.get("risk_level", "LOW RISK"),
+                    "priority": latest_cr.get("priority", "ROUTINE"),
+                    "confidence": latest_cr.get("confidence", 1.0),
+                    "data_reliability": latest_cr.get("data_reliability", "HIGH"),
+                    "evidence_consistency": latest_cr.get("evidence_consistency", "SUPPORTING"),
+                },
+                "key_findings": latest_cr.get("key_findings") or latest_cr.get("findings", []),
+                "physiological_analysis": latest_cr.get("physiological_analysis", []),
+                "temporal_analysis": latest_cr.get("temporal_analysis", []),
+                "risk_interpretation": latest_cr.get("risk_interpretation", ""),
+                "supporting_evidence": latest_cr.get("supporting_evidence", []),
+                "conflicting_evidence": latest_cr.get("conflicting_evidence", []),
+                "evidence_synthesis": latest_cr.get("evidence_synthesis", latest_cr.get("clinical_summary", "")),
+                "medical_evidence": latest_cr.get("medical_evidence", []),
+                "clinical_interpretation": latest_cr.get("clinical_interpretation", latest_cr.get("clinical_summary", "")),
+                "uncertainties": latest_cr.get("uncertainties", []),
+                "recommended_actions": latest_cr.get("recommended_actions", []),
+                "monitoring_priorities": latest_cr.get("monitoring_priorities", []),
+                "escalation_rationale": latest_cr.get("escalation_rationale", ""),
+                "confidence": latest_cr.get("confidence", 1.0),
+            }
+        return jsonify({
+            "patient_id": patient_id,
+            "event_id": latest_cr.get("event_id"),
+            "timestamp": latest_cr.get("timestamp", time.time()),
+            "clinical_report": report,
+        })
+
     @app.route("/api/patients/<int:patient_id>/vitals", methods=["GET"])
     def get_patient_vitals(patient_id: int):
         """Recent vital sign observations time series for charting."""

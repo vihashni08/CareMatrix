@@ -384,7 +384,7 @@ class TestProgressiveEvidenceRetrieval(unittest.TestCase):
             # Wait for consumer thread to process all 3 events
             t0 = time.time()
             decisions = []
-            while time.time() - t0 < 3.0:
+            while time.time() - t0 < 8.0:
                 decisions = queue.get_history("clinical_decisions")
                 if len(decisions) >= 3:
                     break

@@ -126,7 +126,7 @@ def _parse_pmids(xml_bytes: bytes) -> list[str]:
 
 
 def _parse_abstracts(xml_bytes: bytes) -> list[dict[str, str]]:
-    """Extract title, abstract text, and PMID from an efetch PubmedArticleSet XML."""
+    """Extract title, abstract text, PMID, authors, journal, year, and DOI from an efetch PubmedArticleSet XML."""
     results: list[dict[str, str]] = []
     try:
         root = ET.fromstring(xml_bytes)
@@ -149,8 +149,60 @@ def _parse_abstracts(xml_bytes: bytes) -> list[dict[str, str]]:
                 abstract_parts.append(f"{label}: {text}" if label else text)
 
         abstract_text = " ".join(abstract_parts).strip()
-        if abstract_text:
-            results.append({"pmid": pmid, "title": title, "abstract": abstract_text})
+        if not abstract_text:
+            continue
+
+        # Extract authors
+        authors_list: list[str] = []
+        for auth in article.findall(".//Author"):
+            last_name = auth.find("LastName")
+            fore_name = auth.find("ForeName") or auth.find("Initials")
+            if last_name is not None and last_name.text:
+                l_text = last_name.text.strip()
+                f_text = f" {fore_name.text.strip()}" if fore_name is not None and fore_name.text else ""
+                authors_list.append(f"{l_text}{f_text}")
+        if len(authors_list) > 3:
+            authors_str = f"{', '.join(authors_list[:3])} et al."
+        elif authors_list:
+            authors_str = ", ".join(authors_list)
+        else:
+            authors_str = ""
+
+        # Extract journal
+        journal_el = article.find(".//Journal/Title")
+        if journal_el is None or not (journal_el.text or "").strip():
+            journal_el = article.find(".//Journal/ISOAbbreviation")
+        journal_str = "".join(journal_el.itertext()).strip() if journal_el is not None else ""
+
+        # Extract publication year
+        year_el = article.find(".//JournalIssue/PubDate/Year")
+        if year_el is None or not (year_el.text or "").strip():
+            year_el = article.find(".//PubDate/Year")
+        if year_el is None or not (year_el.text or "").strip():
+            year_el = article.find(".//PubDate/MedlineDate")
+        year_str = "".join(year_el.itertext()).strip()[:4] if year_el is not None else ""
+
+        # Extract DOI
+        doi_str = ""
+        for el in article.findall(".//ELocationID"):
+            if el.get("EIdType") == "doi" and el.text:
+                doi_str = el.text.strip()
+                break
+        if not doi_str:
+            for el in article.findall(".//ArticleId"):
+                if el.get("IdType") == "doi" and el.text:
+                    doi_str = el.text.strip()
+                    break
+
+        results.append({
+            "pmid": pmid,
+            "title": title,
+            "abstract": abstract_text,
+            "authors": authors_str,
+            "journal": journal_str,
+            "year": year_str,
+            "doi": doi_str,
+        })
 
     return results
 
