@@ -20,16 +20,15 @@ __pycache__/
 # Environment variables / secrets
 .env
 .env.*
-!.env.example
 
 # Generated monitoring outputs
 data/processed/*.png
 data/processed/*.csv
 data/raw/
-data/vitaldb_cache/
 
 # Generated evaluation and test artifacts
 evaluation_results.json
 .pytest_cache/
 *.db
 *.sqlite3
+data/vitaldb_cache/
