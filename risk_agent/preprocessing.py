@@ -12,25 +12,51 @@ from communication.events import MonitoringEvent
 VITAL_COLUMNS_7 = ["HR", "SpO2", "RR", "SBP", "DBP", "MAP", "BT"]
 
 
-def gather_patient_context(
-    case_id: int,
-    cache: dict[int, dict[str, Any]] | None = None,
-) -> dict[str, float]:
-    """Gather demographic context (age, sex, bmi, asa, emop) with offline fallback."""
-    if cache is not None and case_id in cache:
-        return cache[case_id]
+from pathlib import Path
 
-    context: dict[str, float] = {
+def gather_patient_context(
+    case_id: int | str,
+    cache: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Gather demographic context (age, sex, bmi, asa, emop) without fabricating values."""
+    try:
+        cid = int(case_id)
+    except (TypeError, ValueError):
+        cid = None
+
+    if cache is not None and cid is not None and cid in cache:
+        return cache[cid]
+
+    context: dict[str, Any] = {
         "age": np.nan,
         "sex": np.nan,
         "bmi": np.nan,
         "asa": np.nan,
         "emop": np.nan,
+        "context_source": "unavailable",
     }
 
-    try:
-        cases_df = pd.read_csv("https://api.vitaldb.net/cases", timeout=2.0)
-        patient = cases_df.loc[cases_df["caseid"] == int(case_id)]
+    if cid is None:
+        return context
+
+    cases_df: pd.DataFrame | None = None
+    # 1. Try local cache first
+    local_cache_path = Path(__file__).resolve().parent.parent / "data" / "vitaldb_cache" / "cases.csv"
+    if local_cache_path.exists():
+        try:
+            cases_df = pd.read_csv(local_cache_path)
+        except Exception:
+            cases_df = None
+
+    # 2. Try remote API if local cache missing
+    if cases_df is None:
+        try:
+            cases_df = pd.read_csv("https://api.vitaldb.net/cases", timeout=2.0)
+        except Exception:
+            cases_df = None
+
+    if cases_df is not None and "caseid" in cases_df.columns:
+        patient = cases_df.loc[cases_df["caseid"] == cid]
         if not patient.empty:
             row = patient.iloc[0]
             sex_str = str(row.get("sex", "")).upper()
@@ -39,16 +65,10 @@ def gather_patient_context(
             context["bmi"] = float(pd.to_numeric(row.get("bmi"), errors="coerce"))
             context["asa"] = float(pd.to_numeric(row.get("asa"), errors="coerce"))
             context["emop"] = float(pd.to_numeric(row.get("emop"), errors="coerce"))
-    except Exception:
-        # Standard offline fallback demographic values
-        context["age"] = 60.0
-        context["sex"] = 1.0
-        context["bmi"] = 24.5
-        context["asa"] = 2.0
-        context["emop"] = 0.0
+            context["context_source"] = "vitaldb_cases_table"
 
-    if cache is not None:
-        cache[case_id] = context
+    if cache is not None and cid is not None:
+        cache[cid] = context
     return context
 
 
@@ -112,7 +132,10 @@ def construct_features(
             trend = event.trends.get(vital, "stable")
             features[f"{vital}_slope"] = 1.0 if trend == "increasing" else -1.0 if trend == "decreasing" else 0.0
 
-    features.update(patient_context)
+    for k in ("age", "sex", "bmi", "asa", "emop"):
+        if k in patient_context and k in features:
+            features[k] = float(patient_context[k]) if pd.notna(patient_context[k]) else np.nan
+
     if return_source:
         return features, feature_source
     return features

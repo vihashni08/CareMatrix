@@ -18,6 +18,7 @@ class ClassificationMetricsResult:
     accuracy: float | None = None
     precision: float | None = None
     recall: float | None = None
+    specificity: float | None = None
     f1: float | None = None
     roc_auc: float | None = None
     confusion_matrix: dict[str, int] = field(default_factory=dict)
@@ -30,6 +31,7 @@ class ClassificationMetricsResult:
             "accuracy": self.accuracy,
             "precision": self.precision,
             "recall": self.recall,
+            "specificity": self.specificity,
             "f1": self.f1,
             "roc_auc": self.roc_auc,
             "confusion_matrix": self.confusion_matrix,
@@ -87,6 +89,7 @@ def compute_classification_metrics(
     acc = (tp + tn) / n if n > 0 else 0.0
     prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     f1 = (2 * prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
 
     # Optional AUROC if probabilities and both classes exist
@@ -106,6 +109,7 @@ def compute_classification_metrics(
         accuracy=round(float(acc), 4),
         precision=round(float(prec), 4),
         recall=round(float(rec), 4),
+        specificity=round(float(spec), 4),
         f1=round(float(f1), 4),
         roc_auc=roc_auc,
         confusion_matrix={"TP": tp, "FP": fp, "FN": fn, "TN": tn},
