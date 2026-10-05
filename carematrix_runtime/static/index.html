@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CareMatrix — Multi-Agent Clinician Decision Support</title>
+  <title>CareMatrix — Autonomous Multi-Agent Clinical Decision Support</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Chart.js CDN -->
@@ -18,14 +18,18 @@
       theme: {
         extend: {
           colors: {
-            medDark: '#0b1120',
-            medCard: '#131e36',
+            medDark: '#090d16',
+            medCard: '#0f172a',
+            medCardLight: '#1e293b',
             medBorder: '#1e293b',
+            medBorderLight: '#334155',
             medPrimary: '#0ea5e9',
             medAlert: '#ef4444',
             medWarning: '#f59e0b',
             medSuccess: '#10b981',
+            medPurple: '#8b5cf6',
             medIndigo: '#6366f1',
+            medTeal: '#14b8a6',
           }
         }
       }
@@ -34,56 +38,127 @@
   <style>
     @keyframes pulse-fast {
       0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
+      50% { opacity: 0.35; }
     }
     .pulse-alert {
-      animation: pulse-fast 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      animation: pulse-fast 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
     }
-    /* Custom scrollbar for clean clinical UI */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #0f172a; }
+    /* Clinical clean scrollbars */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #090d16; }
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
   </style>
 </head>
-<body class="bg-medDark text-slate-100 font-sans min-h-screen antialiased">
+<body class="bg-medDark text-slate-100 font-sans min-h-screen antialiased selection:bg-sky-500/30">
   <div id="root"></div>
 
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
+    // --- Provenance Badge Component ---
+    function ProvenanceBadge({ type }) {
+      const badges = {
+        'PATIENT_DATA': { label: 'PATIENT DATA', bg: 'bg-emerald-950/80', text: 'text-emerald-300', border: 'border-emerald-700/60' },
+        'MODEL_OUTPUT': { label: 'MODEL PREDICTION', bg: 'bg-indigo-950/80', text: 'text-indigo-300', border: 'border-indigo-700/60' },
+        'TEMPORAL_ANALYSIS': { label: 'TEMPORAL DRIFT', bg: 'bg-purple-950/80', text: 'text-purple-300', border: 'border-purple-700/60' },
+        'AGENT_VERIFICATION': { label: 'CROSS-AGENT VERIFICATION', bg: 'bg-amber-950/80', text: 'text-amber-300', border: 'border-amber-700/60' },
+        'PUBMED_RAG': { label: 'PUBMED EVIDENCE', bg: 'bg-teal-950/80', text: 'text-teal-300', border: 'border-teal-700/60' },
+        'LLM_SYNTHESIS': { label: 'LLM SYNTHESIS', bg: 'bg-pink-950/80', text: 'text-pink-300', border: 'border-pink-700/60' },
+        'DETERMINISTIC_SAFETY': { label: 'DETERMINISTIC SAFETY', bg: 'bg-red-950/80', text: 'text-red-300', border: 'border-red-700/60' },
+      };
+      const b = badges[type] || { label: type, bg: 'bg-slate-900', text: 'text-slate-300', border: 'border-slate-700' };
+      return (
+        <span className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded border ${b.bg} ${b.text} ${b.border}`}>
+          {b.label}
+        </span>
+      );
+    }
+
+    // --- Main CareMatrix Application ---
     function App() {
+      const [activeTab, setActiveTab] = useState('clinical'); // 'clinical' | 'research'
       const [patients, setPatients] = useState([]);
       const [selectedPid, setSelectedPid] = useState(101);
       const [patientDetail, setPatientDetail] = useState(null);
+      const [clinicalReport, setClinicalReport] = useState(null);
+      const [reportMetadata, setReportMetadata] = useState({});
       const [vitalsHistory, setVitalsHistory] = useState([]);
       const [activeAlerts, setActiveAlerts] = useState([]);
       const [systemHealth, setSystemHealth] = useState(null);
       const [sseConnected, setSseConnected] = useState(false);
       const [orderChecked, setOrderChecked] = useState({});
-      const [triggeringScenario, setTriggeringScenario] = useState(false);
+      const [expandedSections, setExpandedSections] = useState({
+        clinical_status: true,
+        key_findings: true,
+        physiological_analysis: false,
+        temporal_analysis: false,
+        risk_interpretation: true,
+        supporting_evidence: true,
+        conflicting_evidence: true,
+        evidence_synthesis: true,
+        medical_evidence: true,
+        clinical_interpretation: true,
+        uncertainties: true,
+        recommended_actions: true,
+        monitoring_priorities: true,
+        escalation_rationale: true,
+      });
 
-      // Dataset-backed patient loading state
+      // Research / Demo state
+      const [eventStreamLogs, setEventStreamLogs] = useState([]);
+      const [patientMemory, setPatientMemory] = useState(null);
       const [availableDatasets, setAvailableDatasets] = useState({ vitaldb: [], mimic: [] });
       const [selectedAdapter, setSelectedAdapter] = useState('vitaldb');
       const [selectedCaseId, setSelectedCaseId] = useState('');
       const [loadingDataset, setLoadingDataset] = useState(false);
       const [datasetLoadMsg, setDatasetLoadMsg] = useState('');
+      const [triggeringScenario, setTriggeringScenario] = useState(false);
 
       const chartRef = useRef(null);
       const chartInstance = useRef(null);
 
-      // Fetch initial data
+      // Toggle accordion section
+      const toggleSection = (key) => {
+        setExpandedSections(prev => ({ ...prev, [key]: !prev[key] }));
+      };
+
+      const setAllSections = (val) => {
+        const next = {};
+        Object.keys(expandedSections).forEach(k => next[k] = val);
+        setExpandedSections(next);
+      };
+
+      // Fetch Patient Detail & Structured Clinical Intelligence Report
       const refreshPatientDetail = async (pid) => {
         try {
+          // 1. Patient full record
           const res = await fetch(`/api/patients/${pid}`);
           if (res.ok) {
             const data = await res.json();
             setPatientDetail(data);
           }
+
+          // 2. Dedicated structured Clinical Intelligence Report
+          const repRes = await fetch(`/api/patients/${pid}/clinical-report`);
+          if (repRes.ok) {
+            const repData = await repRes.json();
+            setClinicalReport(repData.clinical_report || null);
+            setReportMetadata(repData.metadata || {});
+          }
+
+          // 3. Time series vital history for waveform
           const vRes = await fetch(`/api/patients/${pid}/vitals?limit=40`);
           if (vRes.ok) {
             const vData = await vRes.json();
             setVitalsHistory(vData.vitals || []);
+          }
+
+          // 4. Episodic memory & clinician feedback
+          const mRes = await fetch(`/api/patients/${pid}/memory`);
+          if (mRes.ok) {
+            const mData = await mRes.json();
+            setPatientMemory(mData);
           }
         } catch (e) {
           console.error("Error fetching detail:", e);
@@ -118,7 +193,6 @@
           if (res.ok) {
             const data = await res.json();
             setAvailableDatasets(data);
-            // Pre-select first VitalDB case if available
             const cases = data.vitaldb || [];
             if (cases.length > 0 && !selectedCaseId) setSelectedCaseId(String(cases[0]));
           }
@@ -133,7 +207,7 @@
         fetchDatasets();
       }, [selectedPid]);
 
-      // Connect to Server-Sent Events (SSE)
+      // Connect to Server-Sent Events (SSE) stream
       useEffect(() => {
         const es = new EventSource('/api/events/stream');
 
@@ -143,11 +217,18 @@
         es.onmessage = (event) => {
           try {
             const msg = JSON.parse(event.data);
+            const now = new Date().toLocaleTimeString();
+
+            // Log event in research console
+            setEventStreamLogs(prev => [
+              { time: now, type: msg.type, data: msg.data },
+              ...prev.slice(0, 49)
+            ]);
+
             if (msg.type === 'vital_tick') {
               const obs = msg.data;
               const pid = obs.patient_id || obs.case_id;
 
-              // Update patient card summary
               setPatients(prev => prev.map(p => {
                 if (p.patient_id === pid) {
                   return { ...p, latest_vitals: obs, last_updated: Date.now() / 1000 };
@@ -155,7 +236,6 @@
                 return p;
               }));
 
-              // If for active patient, update detail vitals & history
               if (pid === selectedPid) {
                 setPatientDetail(prev => prev ? { ...prev, latest_vitals: obs } : prev);
                 setVitalsHistory(prev => {
@@ -163,14 +243,12 @@
                   return updated.slice(-40);
                 });
               }
+            } else if (msg.type === 'clinical_reasoning' || msg.type === 'care_coordination' || msg.type === 'data_analysis' || msg.type === 'risk_prediction') {
+              refreshPatientDetail(selectedPid);
+              refreshPatientsList();
             } else if (msg.type === 'alert_updated' || msg.type === 'monitoring_alert') {
               refreshPatientsList();
               refreshPatientDetail(selectedPid);
-            } else if (msg.type === 'clinical_reasoning' || msg.type === 'care_coordination' || msg.type === 'risk_prediction' || msg.type === 'data_analysis') {
-              refreshPatientDetail(selectedPid);
-              refreshPatientsList();
-            } else if (msg.type === 'heartbeat') {
-              // Health pulse
             }
           } catch (e) {
             console.error("SSE parse error:", e);
@@ -184,7 +262,7 @@
         };
       }, [selectedPid]);
 
-      // Initialize / Update Chart.js waveform
+      // Render Physiological Waveform with Chart.js
       useEffect(() => {
         if (!chartRef.current) return;
         const ctx = chartRef.current.getContext('2d');
@@ -204,29 +282,29 @@
                   label: 'Heart Rate (BPM)',
                   data: hrData,
                   borderColor: '#ef4444',
-                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  backgroundColor: 'rgba(239, 68, 68, 0.08)',
                   borderWidth: 2,
-                  tension: 0.3,
+                  tension: 0.35,
                   pointRadius: 2,
                   yAxisID: 'yHR',
                 },
                 {
-                  label: 'MAP (mmHg)',
+                  label: 'Mean Arterial Pressure (mmHg)',
                   data: mapData,
                   borderColor: '#0ea5e9',
-                  backgroundColor: 'rgba(14, 165, 233, 0.1)',
+                  backgroundColor: 'rgba(14, 165, 233, 0.08)',
                   borderWidth: 2,
-                  tension: 0.3,
+                  tension: 0.35,
                   pointRadius: 2,
                   yAxisID: 'yMAP',
                 },
                 {
-                  label: 'SpO2 (%)',
+                  label: 'Oxygen Saturation SpO2 (%)',
                   data: spo2Data,
                   borderColor: '#10b981',
-                  backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                  backgroundColor: 'rgba(16, 185, 129, 0.08)',
                   borderWidth: 2,
-                  tension: 0.3,
+                  tension: 0.35,
                   pointRadius: 2,
                   yAxisID: 'ySpO2',
                 }
@@ -239,7 +317,7 @@
               scales: {
                 x: {
                   grid: { color: '#1e293b' },
-                  ticks: { color: '#64748b' }
+                  ticks: { color: '#64748b', font: { size: 10 } }
                 },
                 yHR: {
                   type: 'linear',
@@ -247,8 +325,8 @@
                   min: 40,
                   max: 160,
                   grid: { color: '#1e293b' },
-                  ticks: { color: '#ef4444' },
-                  title: { display: true, text: 'HR (BPM)', color: '#ef4444' }
+                  ticks: { color: '#ef4444', font: { size: 10 } },
+                  title: { display: true, text: 'HR (BPM)', color: '#ef4444', font: { size: 10, weight: 'bold' } }
                 },
                 yMAP: {
                   type: 'linear',
@@ -256,8 +334,8 @@
                   min: 40,
                   max: 130,
                   grid: { drawOnChartArea: false },
-                  ticks: { color: '#0ea5e9' },
-                  title: { display: true, text: 'MAP (mmHg)', color: '#0ea5e9' }
+                  ticks: { color: '#0ea5e9', font: { size: 10 } },
+                  title: { display: true, text: 'MAP (mmHg)', color: '#0ea5e9', font: { size: 10, weight: 'bold' } }
                 },
                 ySpO2: {
                   type: 'linear',
@@ -265,12 +343,14 @@
                   min: 80,
                   max: 102,
                   grid: { drawOnChartArea: false },
-                  ticks: { color: '#10b981' },
+                  ticks: { color: '#10b981', font: { size: 10 } },
                   display: false,
                 }
               },
               plugins: {
-                legend: { labels: { color: '#cbd5e1' } }
+                legend: {
+                  labels: { color: '#cbd5e1', font: { size: 11 } }
+                }
               }
             }
           });
@@ -283,13 +363,13 @@
         }
       }, [vitalsHistory]);
 
-      // Actions
+      // Alert actions
       const handleAcknowledgeAlert = async (alertId) => {
         try {
           const res = await fetch(`/api/alerts/${alertId}/acknowledge`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ clinician_id: "Dr. Smith (Attending)" })
+            body: JSON.stringify({ clinician_id: "Attending Physician" })
           });
           if (res.ok) {
             refreshPatientsList();
@@ -305,7 +385,7 @@
           const res = await fetch(`/api/alerts/${alertId}/resolve`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reason: "Hemodynamic stabilization verified at bedside." })
+            body: JSON.stringify({ reason: "Bedside evaluation complete; patient stable under monitoring." })
           });
           if (res.ok) {
             refreshPatientsList();
@@ -313,6 +393,26 @@
           }
         } catch (e) {
           console.error(e);
+        }
+      };
+
+      // Research/Demo actions
+      const handleTriggerScenario = async (scenario) => {
+        setTriggeringScenario(true);
+        try {
+          await fetch('/api/scenarios/trigger', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ patient_id: selectedPid, scenario })
+          });
+          setTimeout(() => {
+            refreshPatientDetail(selectedPid);
+            refreshPatientsList();
+            setTriggeringScenario(false);
+          }, 350);
+        } catch (e) {
+          console.error(e);
+          setTriggeringScenario(false);
         }
       };
 
@@ -328,42 +428,24 @@
           });
           if (res.ok) {
             const data = await res.json();
-            setDatasetLoadMsg(`✓ Loaded ${data.data_source || 'dataset patient'} as Bed ${data.patient_id}`);
+            setDatasetLoadMsg(`✓ Loaded ${data.data_source || 'patient'} as Bed ${data.patient_id}`);
             setTimeout(() => {
               refreshPatientsList();
               setDatasetLoadMsg('');
-            }, 2000);
+            }, 2500);
           } else {
             const err = await res.json();
-            setDatasetLoadMsg(`Error: ${err.error || 'Failed to load'}`);
+            setDatasetLoadMsg(`Error: ${err.error || 'Failed to load case'}`);
           }
         } catch (e) {
-          setDatasetLoadMsg('Network error loading dataset patient');
+          setDatasetLoadMsg('Network error loading dataset case');
           console.error(e);
         } finally {
           setLoadingDataset(false);
         }
       };
 
-      const handleTriggerScenario = async (scenario) => {
-        setTriggeringScenario(true);
-        try {
-          await fetch('/api/scenarios/trigger', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ patient_id: selectedPid, scenario })
-          });
-          setTimeout(() => {
-            refreshPatientDetail(selectedPid);
-            refreshPatientsList();
-            setTriggeringScenario(false);
-          }, 300);
-        } catch (e) {
-          console.error(e);
-          setTriggeringScenario(false);
-        }
-      };
-
+      // Active patient contextual variables
       const activePatient = patients.find(p => p.patient_id === selectedPid) || {};
       const vitals = patientDetail?.latest_vitals || activePatient?.latest_vitals || {};
       const careAction = patientDetail?.latest_care_action;
@@ -372,53 +454,90 @@
       const clinicalReasoning = patientDetail?.latest_clinical_reasoning;
       const monitoringEvent = patientDetail?.latest_monitoring_event;
 
-      // Status helper
-      const isUrgent = careAction?.priority === 'URGENT' || activePatient?.status === 'ALERT';
-      const isElevated = careAction?.priority === 'ELEVATED' || activePatient?.status === 'SURVEILLANCE';
+      // Extract Clinical Report fields with fallback
+      const rep = clinicalReport || (clinicalReasoning?.clinical_report) || {};
+      const reportStatus = rep.clinical_status || {
+        risk_level: clinicalReasoning?.risk_level || riskDecision?.risk_level || 'LOW RISK',
+        priority: clinicalReasoning?.priority || 'ROUTINE',
+        confidence: clinicalReasoning?.confidence || 0.95,
+        data_reliability: clinicalReasoning?.data_reliability || 'HIGH',
+        evidence_consistency: clinicalReasoning?.evidence_consistency || 'SUPPORTING',
+      };
+
+      const isHighRisk = (reportStatus.risk_level || '').includes('HIGH');
+      const isUrgent = reportStatus.priority === 'URGENT' || activePatient?.status === 'ALERT';
+      const isElevated = reportStatus.priority === 'ELEVATED' || activePatient?.status === 'SURVEILLANCE';
+      const isDataCompromised = reportStatus.data_reliability === 'COMPROMISED';
+      const isConflicting = reportStatus.evidence_consistency === 'CONFLICTING';
+
+      // Adaptive execution status determination
+      const isAdaptiveRAGSkipped = reportMetadata?.evidence_retrieval === 'SKIPPED_LOW_RISK_CONFIDENT' ||
+        (clinicalReasoning?.metadata?.evidence_retrieval === 'SKIPPED_LOW_RISK_CONFIDENT') ||
+        (rep?.medical_evidence && rep.medical_evidence.length === 0 && !isHighRisk);
+      const isSafetyArbitrated = reportMetadata?.safety_arbitration_applied ||
+        (clinicalReasoning?.metadata?.safety_arbitration_applied) ||
+        (rep?.executive_summary || '').startsWith('[SAFETY ARBITRATION]') ||
+        (rep?.conflicting_evidence || []).some(c => typeof c === 'string' && c.includes('[SAFETY ARBITRATION]'));
 
       return (
         <div className="flex flex-col min-h-screen">
-          {/* 1. Header Bar */}
-          <header className="bg-medCard border-b border-medBorder px-6 py-3 flex items-center justify-between shadow-lg">
+          {/* ================================================================= */}
+          {/* 1. TOP HEADER & WORKSPACE NAVIGATION                              */}
+          {/* ================================================================= */}
+          <header className="bg-medCard border-b border-medBorder px-6 py-3 flex items-center justify-between shadow-xl sticky top-0 z-50">
             <div className="flex items-center space-x-4">
-              <div className="h-9 w-9 rounded-lg bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center font-bold text-white shadow-md">
+              <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-sky-500/20 text-base">
                 CM
               </div>
               <div>
-                <h1 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                <h1 className="text-lg font-bold tracking-tight text-white flex items-center gap-2.5">
                   CAREMATRIX
-                  <span className="text-xs font-normal text-sky-400 bg-sky-950/60 border border-sky-800/80 px-2 py-0.5 rounded-full">
-                    5-Agent Inpatient Decision Support
+                  <span className="text-xs font-semibold text-sky-400 bg-sky-950/70 border border-sky-800 px-2.5 py-0.5 rounded-full">
+                    Clinical Decision Support Platform
                   </span>
                 </h1>
-                <p className="text-xs text-slate-400">Continuous Inpatient Surveillance & Coordinated Bedside Workflows</p>
+                <p className="text-xs text-slate-400">Cooperating Multi-Agent Surveillance & Evidence-Grounded Reasoning</p>
               </div>
             </div>
 
-            {/* Supervisor & Agent Status Indicator Badges */}
-            <div className="hidden lg:flex items-center space-x-3 bg-medDark/80 px-3 py-1.5 rounded-lg border border-medBorder">
-              <div className="flex items-center space-x-1.5 text-xs">
-                <span className={`h-2.5 w-2.5 rounded-full ${sseConnected ? 'bg-emerald-400 animate-ping' : 'bg-red-500'}`}></span>
-                <span className="font-semibold text-slate-300">Supervisor:</span>
-                <span className="text-emerald-400 font-medium">All 5 Agents Online</span>
-              </div>
-              <div className="h-4 w-px bg-slate-700"></div>
-              <div className="flex items-center space-x-1 text-[11px] text-slate-300">
-                <span className="px-1.5 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800">Monitoring</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800">Risk</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800">Analysis</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-pink-950 text-pink-300 border border-pink-800">Reasoning</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold">Coordination</span>
-              </div>
+            {/* View Switcher Tabs (Clinical CDS vs Research Demo) */}
+            <div className="flex items-center bg-medDark border border-medBorder rounded-xl p-1 shadow-inner">
+              <button
+                onClick={() => setActiveTab('clinical')}
+                className={`flex items-center space-x-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  activeTab === 'clinical'
+                    ? 'bg-sky-600 text-white shadow-md shadow-sky-600/30'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                }`}
+              >
+                <span>Clinical Decision Support</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('research')}
+                className={`flex items-center space-x-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  activeTab === 'research'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                }`}
+              >
+                <span>Research & System Evaluation</span>
+              </button>
             </div>
 
+            {/* Live Status Indicators */}
             <div className="flex items-center space-x-3">
-              <div className={`text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5 ${
-                activeAlerts.length > 0 ? 'bg-red-500/20 text-red-400 border border-red-500/40 pulse-alert' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+              <div className="flex items-center space-x-2 bg-medDark px-3 py-1.5 rounded-lg border border-medBorder text-xs">
+                <span className={`h-2.5 w-2.5 rounded-full ${sseConnected ? 'bg-emerald-400 animate-ping' : 'bg-red-500'}`}></span>
+                <span className="text-slate-300 font-medium">SSE Stream:</span>
+                <span className={`font-semibold ${sseConnected ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {sseConnected ? 'LIVE' : 'POLLING'}
+                </span>
+              </div>
+
+              <div className={`text-xs px-3 py-1.5 rounded-lg font-bold flex items-center gap-2 border ${
+                activeAlerts.length > 0
+                  ? 'bg-red-950/70 text-red-300 border-red-700/80 pulse-alert shadow-lg shadow-red-900/20'
+                  : 'bg-emerald-950/40 text-emerald-300 border-emerald-800/60'
               }`}>
                 <span className={`h-2 w-2 rounded-full ${activeAlerts.length > 0 ? 'bg-red-400' : 'bg-emerald-400'}`}></span>
                 {activeAlerts.length} Active Alert{activeAlerts.length === 1 ? '' : 's'}
@@ -426,9 +545,11 @@
             </div>
           </header>
 
-          {/* 2. Patient / Bed Strip */}
-          <section className="bg-slate-900 border-b border-medBorder px-6 py-2.5 flex items-center space-x-3 overflow-x-auto">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider pr-2">Monitored Beds:</span>
+          {/* ================================================================= */}
+          {/* 2. MONITORED BEDS / PATIENT SELECTION STRIP                        */}
+          {/* ================================================================= */}
+          <section className="bg-slate-900/95 border-b border-medBorder px-6 py-2 flex items-center space-x-3 overflow-x-auto">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider pr-1">Beds:</span>
             {patients.map(p => {
               const isSelected = p.patient_id === selectedPid;
               const hasAlert = p.has_active_alert || p.status === 'ALERT';
@@ -439,32 +560,32 @@
                   onClick={() => setSelectedPid(p.patient_id)}
                   className={`flex items-center space-x-3 px-3.5 py-1.5 rounded-lg border text-left transition-all ${
                     isSelected
-                      ? 'bg-medCard border-sky-500 shadow-md shadow-sky-500/10'
+                      ? 'bg-medCard border-sky-500 shadow-md shadow-sky-500/20 ring-1 ring-sky-500/50'
                       : 'bg-medDark/60 border-medBorder hover:border-slate-700'
                   }`}
                 >
                   <div className="flex flex-col">
                     <div className="flex items-center space-x-2">
                       <span className="text-xs font-bold text-white">{p.name || `Bed ${p.patient_id}`}</span>
-                      <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-tight ${
                         hasAlert ? 'bg-red-500 text-white animate-pulse' :
                         isSurveillance ? 'bg-amber-500 text-black' :
-                        'bg-emerald-600/30 text-emerald-400 border border-emerald-500/40'
+                        'bg-emerald-600/30 text-emerald-300 border border-emerald-500/40'
                       }`}>
                         {p.status}
                       </span>
                     </div>
                     <div className="flex items-center space-x-2 text-[11px] text-slate-400 mt-0.5">
-                      <span>HR: <b className="text-slate-200">{Math.round(p.latest_vitals?.hr || p.latest_vitals?.HR || 0)}</b></span>
-                      <span>MAP: <b className="text-slate-200">{Math.round(p.latest_vitals?.map || p.latest_vitals?.MAP || 0)}</b></span>
-                      <span className="text-slate-500">• {p.scenario}</span>
+                      <span>HR: <b className="text-slate-100">{Math.round(p.latest_vitals?.hr || p.latest_vitals?.HR || 0)}</b></span>
+                      <span>MAP: <b className="text-slate-100">{Math.round(p.latest_vitals?.map || p.latest_vitals?.MAP || 0)}</b></span>
+                      <span className="text-slate-500">• {p.scenario || 'STABLE'}</span>
                     </div>
                     {(p.data_source && p.data_source !== 'simulated') ? (
-                      <span className="text-[9px] mt-0.5 px-1.5 py-0.5 rounded bg-teal-900/60 text-teal-300 border border-teal-700/50 font-mono self-start">
-                        {p.data_source}
+                      <span className="text-[9px] mt-0.5 px-1.5 py-0.2 rounded bg-teal-950 text-teal-300 border border-teal-800 font-mono self-start">
+                        {p.data_source.toUpperCase()}
                       </span>
                     ) : (
-                      <span className="text-[9px] mt-0.5 px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-500 border border-slate-700/30 font-mono self-start">
+                      <span className="text-[9px] mt-0.5 px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 border border-slate-700 font-mono self-start">
                         SIMULATED
                       </span>
                     )}
@@ -474,470 +595,1478 @@
             })}
           </section>
 
-          {/* 3. Main Operational View */}
-          <main className="flex-1 p-6 space-y-6 max-w-7xl mx-auto w-full">
+          {/* ================================================================= */}
+          {/* 3. MAIN WORKSPACE VIEW (CLINICAL CDS vs RESEARCH DEMO)            */}
+          {/* ================================================================= */}
+          {activeTab === 'clinical' ? (
+            <main className="flex-1 p-6 space-y-6 max-w-7xl mx-auto w-full">
 
-            {/* A. Top Telemetry Row, Scenario Switcher & Dataset Loader */}
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-              {/* Vital Sign Cards (3 cols on lg) */}
-              <div className="lg:col-span-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {/* Heart Rate */}
-                <div className={`p-4 rounded-xl border ${
-                  (vitals.hr || vitals.HR) > 105 || (vitals.hr || vitals.HR) < 55
-                    ? 'bg-red-950/40 border-red-700/60 text-red-200'
-                    : 'bg-medCard border-medBorder text-slate-100'
-                }`}>
-                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
-                    <span>HEART RATE</span>
-                    <span className="text-[10px] font-mono text-slate-500">60-100 BPM</span>
-                  </div>
-                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
-                    <span>{Math.round(vitals.hr || vitals.HR || 0)}</span>
-                    <span className="text-xs font-normal text-slate-400">bpm</span>
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1">Telemetry ECG Lead II</div>
-                </div>
-
-                {/* Mean Arterial Pressure */}
-                <div className={`p-4 rounded-xl border ${
-                  (vitals.map || vitals.MAP) < 65
-                    ? 'bg-red-950/40 border-red-700/60 text-red-200'
-                    : 'bg-medCard border-medBorder text-slate-100'
-                }`}>
-                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
-                    <span>MEAN ART PRESSURE</span>
-                    <span className="text-[10px] font-mono text-slate-500">70-105 mmHg</span>
-                  </div>
-                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
-                    <span>{Math.round(vitals.map || vitals.MAP || 0)}</span>
-                    <span className="text-xs font-normal text-slate-400">mmHg</span>
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1">Continuous Arterial Line</div>
-                </div>
-
-                {/* SpO2 */}
-                <div className={`p-4 rounded-xl border ${
-                  (vitals.spo2 || vitals.SpO2) < 92
-                    ? 'bg-red-950/40 border-red-700/60 text-red-200'
-                    : 'bg-medCard border-medBorder text-slate-100'
-                }`}>
-                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
-                    <span>OXYGEN SAT (SpO2)</span>
-                    <span className="text-[10px] font-mono text-slate-500">&gt;=95%</span>
-                  </div>
-                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
-                    <span>{Math.round(vitals.spo2 || vitals.SpO2 || 0)}%</span>
-                    <span className="text-xs font-normal text-slate-400">pulse ox</span>
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1">Plethysmograph Wave</div>
-                </div>
-
-                {/* Resp Rate */}
-                <div className={`p-4 rounded-xl border ${
-                  (vitals.rr || vitals.RR) > 22
-                    ? 'bg-amber-950/40 border-amber-700/60 text-amber-200'
-                    : 'bg-medCard border-medBorder text-slate-100'
-                }`}>
-                  <div className="flex justify-between items-center text-xs font-medium text-slate-400">
-                    <span>RESPIRATORY RATE</span>
-                    <span className="text-[10px] font-mono text-slate-500">12-20 /min</span>
-                  </div>
-                  <div className="text-3xl font-extrabold mt-1 font-mono tracking-tight flex items-baseline justify-between">
-                    <span>{Math.round(vitals.rr || vitals.RR || 0)}</span>
-                    <span className="text-xs font-normal text-slate-400">/min</span>
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1">Impedance Pneumography</div>
-                </div>
-              </div>
-
-              {/* Scenario Simulation Controller (Optional Fault Injection — Testing Only) */}
-              <div className="bg-medCard border border-medBorder p-4 rounded-xl flex flex-col justify-between">
-                <div>
-                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                    <span>Fault Injection (Synthetic)</span>
-                    <span className="text-[10px] text-amber-400 font-mono">Test Only</span>
-                  </div>
-                  <p className="text-xs text-slate-300 mt-1">Current State: <b className="text-white">{activePatient?.scenario || 'STABLE'}</b></p>
-                </div>
-                <div className="grid grid-cols-2 gap-1.5 mt-3">
-                  <button
-                    disabled={triggeringScenario}
-                    onClick={() => handleTriggerScenario('STABLE')}
-                    className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 py-1.5 px-2 rounded font-medium text-slate-200 transition"
-                  >
-                    Stable Normal
-                  </button>
-                  <button
-                    disabled={triggeringScenario}
-                    onClick={() => handleTriggerScenario('GRADUAL_DETERIORATION')}
-                    className="text-[11px] bg-red-950/60 hover:bg-red-900 border border-red-800 py-1.5 px-2 rounded font-medium text-red-300 transition"
-                  >
-                    Sepsis / Deteriorate
-                  </button>
-                  <button
-                    disabled={triggeringScenario}
-                    onClick={() => handleTriggerScenario('SUDDEN_ABNORMALITY')}
-                    className="text-[11px] bg-purple-950/60 hover:bg-purple-900 border border-purple-800 py-1.5 px-2 rounded font-medium text-purple-300 transition"
-                  >
-                    Sudden Shock
-                  </button>
-                  <button
-                    disabled={triggeringScenario}
-                    onClick={() => handleTriggerScenario('RECOVERY')}
-                    className="text-[11px] bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800 py-1.5 px-2 rounded font-medium text-emerald-300 transition"
-                  >
-                    Recovery
-                  </button>
-                  <button
-                    disabled={triggeringScenario}
-                    onClick={() => handleTriggerScenario('NOISY_SENSOR')}
-                    className="text-[11px] bg-amber-950/60 hover:bg-amber-900 border border-amber-800 py-1.5 px-2 rounded font-medium text-amber-300 transition"
-                  >
-                    Noisy Sensor
-                  </button>
-                  <button
-                    disabled={triggeringScenario}
-                    onClick={() => handleTriggerScenario('MISSING_DATA')}
-                    className="text-[11px] bg-slate-900 hover:bg-slate-800 border border-slate-700 py-1.5 px-2 rounded font-medium text-slate-400 transition"
-                  >
-                    Missing Lead
-                  </button>
-                </div>
-              </div>
-
-              {/* Load Real Patient Case */}
-              <div className="bg-medCard border border-teal-800/50 p-4 rounded-xl flex flex-col justify-between">
-                <div>
-                  <div className="text-xs font-bold text-teal-400 uppercase tracking-wider flex items-center justify-between">
-                    <span>Real Patient Data</span>
-                    <span className="text-[10px] text-teal-500 font-mono">Dataset</span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-1">Load from VitalDB or MIMIC-IV</p>
-                </div>
-                <div className="mt-3 space-y-2">
-                  <select
-                    value={selectedAdapter}
-                    onChange={(e) => {
-                      setSelectedAdapter(e.target.value);
-                      const cases = availableDatasets[e.target.value] || [];
-                      setSelectedCaseId(cases.length > 0 ? String(cases[0]) : '');
-                    }}
-                    className="w-full text-[11px] bg-slate-800 border border-slate-700 text-slate-200 py-1.5 px-2 rounded"
-                  >
-                    <option value="vitaldb">VitalDB</option>
-                    <option value="mimic">MIMIC-IV</option>
-                  </select>
-                  <select
-                    value={selectedCaseId}
-                    onChange={(e) => setSelectedCaseId(e.target.value)}
-                    className="w-full text-[11px] bg-slate-800 border border-slate-700 text-slate-200 py-1.5 px-2 rounded"
-                  >
-                    {(availableDatasets[selectedAdapter] || []).map(cid => (
-                      <option key={cid} value={String(cid)}>Case {cid}</option>
-                    ))}
-                  </select>
-                  <button
-                    disabled={loadingDataset || !selectedCaseId}
-                    onClick={handleLoadDatasetPatient}
-                    className="w-full text-[11px] bg-teal-900 hover:bg-teal-800 border border-teal-700 py-1.5 px-2 rounded font-medium text-teal-200 transition disabled:opacity-50"
-                  >
-                    {loadingDataset ? 'Loading...' : 'Load Patient Case'}
-                  </button>
-                  {datasetLoadMsg && (
-                    <p className={`text-[10px] font-medium ${datasetLoadMsg.startsWith('✓') ? 'text-teal-400' : 'text-red-400'}`}>
-                      {datasetLoadMsg}
+              {/* SECTION A — PATIENT OVERVIEW BANNER */}
+              <div className="bg-medCard border border-medBorder rounded-2xl p-5 shadow-xl relative overflow-hidden">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div>
+                    <div className="flex items-center space-x-3">
+                      <h2 className="text-2xl font-black text-white tracking-tight">
+                        {patientDetail?.name || `Patient ${selectedPid}`}
+                      </h2>
+                      <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                        ID: {selectedPid}
+                      </span>
+                      {patientDetail?.data_source && (
+                        <span className="text-xs font-mono px-2 py-0.5 rounded bg-teal-950 text-teal-300 border border-teal-800">
+                          SOURCE: {patientDetail.data_source.toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Continuous Inpatient Intensive Care Decision Support & Physiological Trajectory Surveillance
                     </p>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* B. Live Telemetry Waveform Trend & 5-Agent Architecture Visualizer */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Waveform Chart (7 cols) */}
-              <div className="lg:col-span-7 bg-medCard border border-medBorder rounded-xl p-4 flex flex-col">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center space-x-2">
-                    <span className="h-2 w-2 rounded-full bg-sky-400 animate-pulse"></span>
-                    <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Continuous Physiological Trend (Rolling 40s)</h3>
                   </div>
-                  <span className="text-[11px] text-slate-500">Live SSE Stream</span>
+
+                  {/* Primary State Hierarchy Badges */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Risk Level Badge */}
+                    <div className={`px-3 py-1.5 rounded-xl border font-bold text-xs flex items-center space-x-1.5 shadow ${
+                      isHighRisk
+                        ? 'bg-red-950/80 text-red-200 border-red-700 animate-pulse'
+                        : 'bg-emerald-950/60 text-emerald-300 border-emerald-700'
+                    }`}>
+                      <span className={`h-2 w-2 rounded-full ${isHighRisk ? 'bg-red-400' : 'bg-emerald-400'}`}></span>
+                      <span>RISK: {reportStatus.risk_level}</span>
+                    </div>
+
+                    {/* Priority Badge */}
+                    <div className={`px-3 py-1.5 rounded-xl border font-bold text-xs uppercase ${
+                      isUrgent
+                        ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-600/30'
+                        : isElevated
+                        ? 'bg-amber-500 text-black border-amber-400 font-extrabold shadow-md shadow-amber-500/20'
+                        : 'bg-slate-800 text-slate-300 border-slate-700'
+                    }`}>
+                      PRIORITY: {reportStatus.priority}
+                    </div>
+
+                    {/* Evidence Consistency */}
+                    <div className={`px-3 py-1.5 rounded-xl border font-bold text-xs ${
+                      isConflicting
+                        ? 'bg-amber-950/80 text-amber-300 border-amber-700'
+                        : reportStatus.evidence_consistency === 'UNCERTAIN'
+                        ? 'bg-purple-950/80 text-purple-300 border-purple-700'
+                        : 'bg-emerald-950/60 text-emerald-300 border-emerald-700'
+                    }`}>
+                      EVIDENCE: {reportStatus.evidence_consistency}
+                    </div>
+
+                    {/* Data Reliability */}
+                    <div className={`px-3 py-1.5 rounded-xl border font-bold text-xs ${
+                      isDataCompromised
+                        ? 'bg-amber-950/80 text-amber-300 border-amber-700'
+                        : 'bg-slate-800 text-slate-300 border-slate-700'
+                    }`}>
+                      DATA: {reportStatus.data_reliability}
+                    </div>
+
+                    {/* Certainty / Confidence */}
+                    <div className="px-3 py-1.5 rounded-xl border border-slate-700 bg-slate-900 text-xs font-mono text-slate-200">
+                      CONFIDENCE: <b className="text-sky-400">{(reportStatus.confidence * 100).toFixed(0)}%</b>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex-1 min-h-[240px] w-full">
-                  <canvas ref={chartRef}></canvas>
+
+                {/* Evidence Provenance Ribbon */}
+                <div className="mt-4 pt-3 border-t border-medBorder flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Evidence Pipeline:</span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <ProvenanceBadge type="PATIENT_DATA" />
+                      <span className="text-slate-600 text-[10px]">→</span>
+                      <ProvenanceBadge type="MODEL_OUTPUT" />
+                      <span className="text-slate-600 text-[10px]">→</span>
+                      <ProvenanceBadge type="TEMPORAL_ANALYSIS" />
+                      <span className="text-slate-600 text-[10px]">→</span>
+                      <ProvenanceBadge type="AGENT_VERIFICATION" />
+                      <span className="text-slate-600 text-[10px]">→</span>
+                      <ProvenanceBadge type={isAdaptiveRAGSkipped ? 'TEMPORAL_ANALYSIS' : 'PUBMED_RAG'} />
+                      <span className="text-slate-600 text-[10px]">→</span>
+                      <ProvenanceBadge type="LLM_SYNTHESIS" />
+                      <span className="text-slate-600 text-[10px]">→</span>
+                      <ProvenanceBadge type="DETERMINISTIC_SAFETY" />
+                    </div>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400">
+                    Last Tick: <span className="font-mono text-slate-200">{new Date().toLocaleTimeString()}</span>
+                  </div>
                 </div>
               </div>
 
-              {/* 5-Agent System Pipeline Visualizer (5 cols) */}
-              <div className="lg:col-span-5 bg-medCard border border-medBorder rounded-xl p-4 flex flex-col space-y-3">
-                <div className="flex items-center justify-between border-b border-medBorder pb-2">
-                  <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                    Autonomous Multi-Agent Trace
-                  </h3>
-                  <span className="text-[10px] text-emerald-400 font-mono">Autonomous Execution</span>
+              {/* SECTION B — PHYSIOLOGICAL TRENDS & WAVEFORM */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                {/* 4 Vital Sign Indicator Cards (5 cols) */}
+                <div className="lg:col-span-5 grid grid-cols-2 gap-3">
+                  {/* Heart Rate */}
+                  <div className={`p-4 rounded-xl border transition-all ${
+                    (vitals.hr || vitals.HR) > 105 || (vitals.hr || vitals.HR) < 55
+                      ? 'bg-red-950/40 border-red-700/80 text-red-200 shadow-lg shadow-red-950/40'
+                      : 'bg-medCard border-medBorder text-slate-100'
+                  }`}>
+                    <div className="flex justify-between items-center text-xs font-semibold text-slate-400">
+                      <span>HEART RATE</span>
+                      <span className="text-[10px] font-mono text-slate-500">60-100 BPM</span>
+                    </div>
+                    <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                      <span>{Math.round(vitals.hr || vitals.HR || 0)}</span>
+                      <span className="text-xs font-normal text-slate-400">bpm</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">
+                      <span>Telemetry Lead II</span>
+                      <span className="font-mono text-sky-400">
+                        {dataAnalysis?.trend_metrics?.HR?.trend || 'stable'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Mean Arterial Pressure */}
+                  <div className={`p-4 rounded-xl border transition-all ${
+                    (vitals.map || vitals.MAP) < 65
+                      ? 'bg-red-950/40 border-red-700/80 text-red-200 shadow-lg shadow-red-950/40'
+                      : 'bg-medCard border-medBorder text-slate-100'
+                  }`}>
+                    <div className="flex justify-between items-center text-xs font-semibold text-slate-400">
+                      <span>MEAN ART PRESSURE</span>
+                      <span className="text-[10px] font-mono text-slate-500">70-105 mmHg</span>
+                    </div>
+                    <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                      <span>{Math.round(vitals.map || vitals.MAP || 0)}</span>
+                      <span className="text-xs font-normal text-slate-400">mmHg</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">
+                      <span>Arterial Line</span>
+                      <span className="font-mono text-sky-400">
+                        {dataAnalysis?.trend_metrics?.MAP?.trend || 'stable'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* SpO2 */}
+                  <div className={`p-4 rounded-xl border transition-all ${
+                    (vitals.spo2 || vitals.SpO2) < 92
+                      ? 'bg-red-950/40 border-red-700/80 text-red-200 shadow-lg shadow-red-950/40'
+                      : 'bg-medCard border-medBorder text-slate-100'
+                  }`}>
+                    <div className="flex justify-between items-center text-xs font-semibold text-slate-400">
+                      <span>OXYGEN SATURATION</span>
+                      <span className="text-[10px] font-mono text-slate-500">&gt;=95%</span>
+                    </div>
+                    <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                      <span>{Math.round(vitals.spo2 || vitals.SpO2 || 0)}%</span>
+                      <span className="text-xs font-normal text-slate-400">SpO2</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">
+                      <span>Pulse Oximetry</span>
+                      <span className="font-mono text-sky-400">
+                        {dataAnalysis?.trend_metrics?.SpO2?.trend || 'stable'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Resp Rate */}
+                  <div className={`p-4 rounded-xl border transition-all ${
+                    (vitals.rr || vitals.RR) > 22
+                      ? 'bg-amber-950/40 border-amber-700/80 text-amber-200 shadow-lg shadow-amber-950/40'
+                      : 'bg-medCard border-medBorder text-slate-100'
+                  }`}>
+                    <div className="flex justify-between items-center text-xs font-semibold text-slate-400">
+                      <span>RESPIRATORY RATE</span>
+                      <span className="text-[10px] font-mono text-slate-500">12-20 /min</span>
+                    </div>
+                    <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
+                      <span>{Math.round(vitals.rr || vitals.RR || 0)}</span>
+                      <span className="text-xs font-normal text-slate-400">/min</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">
+                      <span>Impedance Wave</span>
+                      <span className="font-mono text-sky-400">
+                        {dataAnalysis?.trend_metrics?.RR?.trend || 'stable'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="space-y-2 text-xs">
+                {/* Multi-channel Waveform (7 cols) */}
+                <div className="lg:col-span-7 bg-medCard border border-medBorder rounded-xl p-4 flex flex-col justify-between shadow-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="h-2 w-2 rounded-full bg-sky-400 animate-pulse"></span>
+                      <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                        Continuous Physiological Trajectory (Rolling 40-Second Window)
+                      </h3>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-400">Telemetry Sampling: 1.0s</span>
+                  </div>
+                  <div className="flex-1 min-h-[200px] w-full">
+                    <canvas ref={chartRef}></canvas>
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION C — ADAPTIVE MULTI-AGENT PIPELINE TRACE */}
+              <div className="bg-medCard border border-medBorder rounded-2xl p-5 shadow-xl space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-medBorder pb-3 gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      Adaptive Multi-Agent Execution Pipeline
+                      <span className="text-xs font-normal text-slate-400">
+                        (Cooperating Autonomous Agents)
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Dynamically gates computational stages based on predicted risk, evidence consistency, and vital sign stability.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    {isAdaptiveRAGSkipped ? (
+                      <span className="text-xs font-bold font-mono px-3 py-1 rounded-full bg-sky-950 text-sky-300 border border-sky-800">
+                        ADAPTIVE GATING: RAG BYPASSED (LOW RISK CONFIDENT)
+                      </span>
+                    ) : (
+                      <span className="text-xs font-bold font-mono px-3 py-1 rounded-full bg-purple-950 text-purple-300 border border-purple-800">
+                        ADAPTIVE GATING: FULL PIPELINE ENGAGED (RETRIEVAL ACTIVE)
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 6 Sequential Nodes */}
+                <div className="grid grid-cols-1 md:grid-cols-6 gap-3 text-xs">
                   {/* 1. Monitoring Agent */}
-                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
-                    <span className="px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 font-bold font-mono text-[10px]">1. MONITOR</span>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <span className="font-semibold text-slate-200">Monitoring Agent</span>
-                        <span className="text-[10px] text-slate-400">{monitoringEvent ? monitoringEvent.event_type : 'surveillance'}</span>
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-bold font-mono text-sky-400 px-1.5 py-0.5 rounded bg-sky-950 border border-sky-800">
+                          1. MONITOR
+                        </span>
+                        <span className="text-[10px] font-semibold text-emerald-400 font-mono">COMPLETED</span>
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        {monitoringEvent ? `Severity: ${monitoringEvent.severity} | Affected: ${monitoringEvent.affected_vitals?.join(', ') || 'none'}` : 'Vitals within baseline limits (Adaptive bypass active)'}
+                      <div className="font-bold text-slate-100">Monitoring Agent</div>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {monitoringEvent ? `Detected: ${monitoringEvent.affected_vitals?.join(', ') || 'No breaches'}` : 'Vitals surveillance within limits'}
                       </p>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-2 border-t border-slate-800 pt-1">
+                      Status: Active Loop
                     </div>
                   </div>
 
                   {/* 2. Risk Agent */}
-                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
-                    <span className="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-400 font-bold font-mono text-[10px]">2. RISK</span>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <span className="font-semibold text-slate-200">Risk Agent (ML)</span>
-                        <span className={`text-[10px] font-bold ${riskDecision?.decision === 'HIGH_RISK' ? 'text-red-400' : 'text-emerald-400'}`}>
-                          {riskDecision?.risk_level || 'LOW RISK'}
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-bold font-mono text-indigo-400 px-1.5 py-0.5 rounded bg-indigo-950 border border-indigo-800">
+                          2. RISK
                         </span>
+                        <span className="text-[10px] font-semibold text-emerald-400 font-mono">COMPLETED</span>
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        RF Model Probability: <b className="text-slate-200">{riskDecision ? `${(riskDecision.risk_probability * 100).toFixed(1)}%` : '5.2%'}</b> (Threshold: 16.0%)
+                      <div className="font-bold text-slate-100">Risk Agent (ML)</div>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {riskDecision ? `Prob: ${(riskDecision.risk_probability * 100).toFixed(1)}% (${riskDecision.risk_level})` : 'Prediction complete'}
                       </p>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-2 border-t border-slate-800 pt-1">
+                      Model: RF Classifier
                     </div>
                   </div>
 
                   {/* 3. Data Analysis Agent */}
-                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
-                    <span className="px-1.5 py-0.5 rounded bg-purple-950 text-purple-400 font-bold font-mono text-[10px]">3. ANALYSIS</span>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <span className="font-semibold text-slate-200">Data Analysis Agent</span>
-                        <span className="text-[10px] text-slate-400">{dataAnalysis?.evidence_consistency || 'CONSISTENT'}</span>
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-bold font-mono text-purple-400 px-1.5 py-0.5 rounded bg-purple-950 border border-purple-800">
+                          3. ANALYSIS
+                        </span>
+                        <span className="text-[10px] font-semibold text-emerald-400 font-mono">COMPLETED</span>
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        {dataAnalysis?.pattern_identified?.slice(0, 2).join('; ') || 'Physiological variance stable. Signal fidelity verified.'}
+                      <div className="font-bold text-slate-100">Data Analysis</div>
+                      <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">
+                        {dataAnalysis?.pattern_identified?.[0] || 'Dynamic window slope analysis'}
                       </p>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-2 border-t border-slate-800 pt-1">
+                      Slopes & Deltas
                     </div>
                   </div>
 
-                  {/* 4. Clinical Reasoning Agent */}
-                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2">
-                    <span className="px-1.5 py-0.5 rounded bg-pink-950 text-pink-400 font-bold font-mono text-[10px]">4. REASONING</span>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <span className="font-semibold text-slate-200">Clinical Reasoning (RAG/LLM)</span>
-                        <span className="text-[10px] text-pink-400 font-semibold">{clinicalReasoning?.priority || 'ROUTINE'}</span>
-                      </div>
-                      <p className="text-[11px] text-slate-300 mt-0.5 line-clamp-2">
-                        {clinicalReasoning?.clinical_summary || 'Baseline parameters stable. No clinical deterioration detected.'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* 5. Care Coordination Agent */}
-                  <div className="bg-medDark/70 p-2.5 rounded-lg border border-emerald-900/60 flex items-start space-x-2">
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 font-bold font-mono text-[10px]">5. ACTION</span>
-                    <div className="flex-1">
-                      <div className="flex justify-between">
-                        <span className="font-semibold text-emerald-300">Care Coordination Agent</span>
-                        <span className={`text-[10px] font-bold px-1 rounded ${
-                          careAction?.priority === 'URGENT' ? 'bg-red-500/20 text-red-400' :
-                          careAction?.priority === 'ELEVATED' ? 'bg-amber-500/20 text-amber-300' :
-                          'bg-emerald-500/20 text-emerald-400'
-                        }`}>
-                          {careAction?.priority || 'ROUTINE'}
+                  {/* 4. Cross-Agent Verification */}
+                  <div className={`rounded-xl p-3 flex flex-col justify-between border ${
+                    isConflicting
+                      ? 'bg-amber-950/40 border-amber-700/80'
+                      : 'bg-slate-900/90 border-slate-800'
+                  }`}>
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-bold font-mono text-amber-400 px-1.5 py-0.5 rounded bg-amber-950 border border-amber-800">
+                          4. VERIFY
+                        </span>
+                        <span className={`text-[10px] font-bold font-mono ${isConflicting ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {reportStatus.evidence_consistency}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-300 mt-0.5">
-                        Action: <b className="text-white">{careAction?.action_type || 'CONTINUE_ROUTINE_MONITORING'}</b>
+                      <div className="font-bold text-slate-100">Cross-Agent Check</div>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {isConflicting ? 'Risk vs Trend discordance flagged' : 'Corroborating physiological evidence'}
                       </p>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-2 border-t border-slate-800 pt-1">
+                      Integrity Check
+                    </div>
+                  </div>
+
+                  {/* 5. Clinical Reasoning Agent */}
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-bold font-mono text-pink-400 px-1.5 py-0.5 rounded bg-pink-950 border border-pink-800">
+                          5. REASON
+                        </span>
+                        <span className="text-[10px] font-semibold text-emerald-400 font-mono">COMPLETED</span>
+                      </div>
+                      <div className="font-bold text-slate-100">Clinical Reasoning</div>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Mode: <b className="text-pink-300 font-mono">{reportMetadata?.reasoning_mode || clinicalReasoning?.metadata?.reasoning_mode || 'DETERMINISTIC'}</b>
+                      </p>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-2 border-t border-slate-800 pt-1">
+                      {isAdaptiveRAGSkipped ? 'RAG: Skipped' : 'RAG: Active'}
+                    </div>
+                  </div>
+
+                  {/* 6. Care Coordination Agent */}
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-bold font-mono text-emerald-400 px-1.5 py-0.5 rounded bg-emerald-950 border border-emerald-800">
+                          6. ACTION
+                        </span>
+                        <span className="text-[10px] font-semibold text-emerald-400 font-mono">COMPLETED</span>
+                      </div>
+                      <div className="font-bold text-slate-100">Care Coordination</div>
+                      <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">
+                        {careAction?.action_type || 'CONTINUE_ROUTINE_MONITORING'}
+                      </p>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 mt-2 border-t border-slate-800 pt-1">
+                      Priority: {careAction?.priority || 'ROUTINE'}
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            {/* C. Bottom Row: Care Coordination Action Plan & Alert Lifecycle Center */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-              {/* Care Coordination Orders & Action Plan (7 cols) */}
-              <div className="lg:col-span-7 bg-medCard border border-medBorder rounded-xl p-5 space-y-4">
+              {/* SECTION D — CROSS-AGENT VERIFICATION & SAFETY ARBITRATION PANEL */}
+              <div className="bg-medCard border border-medBorder rounded-2xl p-5 shadow-xl space-y-4">
                 <div className="flex items-center justify-between border-b border-medBorder pb-3">
                   <div>
                     <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      Care Coordination Action Plan
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                        isUrgent ? 'bg-red-500 text-white' :
-                        isElevated ? 'bg-amber-500 text-black' :
-                        'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                      }`}>
-                        Priority: {careAction?.priority || 'ROUTINE'}
-                      </span>
+                      Cross-Agent Verification & Deterministic Safety Arbitration
                     </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">Deterministic non-diagnostic workflow execution & bedside tasking</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Direct contrast of predictive ML model risk against analytical temporal trajectory findings.
+                    </p>
                   </div>
-                  {careAction?.clinician_review_required && (
-                    <span className="text-xs bg-red-950/80 border border-red-700 text-red-300 px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-red-400 animate-ping"></span>
-                      Clinician Review Required
+                  <span className={`text-xs px-3 py-1 rounded-full font-bold uppercase ${
+                    isConflicting
+                      ? 'bg-amber-950 text-amber-300 border border-amber-700 animate-pulse'
+                      : 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                  }`}>
+                    {reportStatus.evidence_consistency === 'SUPPORTING' ? '✓ Evidence Supporting' : `⚠ ${reportStatus.evidence_consistency}`}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Left: Risk Agent Conclusion */}
+                  <div className="bg-slate-900 p-4 rounded-xl border border-indigo-900/60 flex flex-col justify-between">
+                    <div>
+                      <div className="text-[11px] font-bold text-indigo-400 uppercase tracking-wider mb-1">
+                        Risk Agent Prediction (ML)
+                      </div>
+                      <div className="text-xl font-extrabold text-white">
+                        {riskDecision?.risk_level || reportStatus.risk_level}
+                      </div>
+                      <div className="text-xs text-slate-400 mt-1">
+                        Probability: <b className="text-slate-200 font-mono">
+                          {riskDecision?.risk_probability != null ? `${(riskDecision.risk_probability * 100).toFixed(1)}%` : 'N/A'}
+                        </b>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">
+                        Model: <span className="font-mono text-slate-300">{riskDecision?.model_name || 'RandomForest'}</span>
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-2 mt-3">
+                      Independent static feature inference
+                    </div>
+                  </div>
+
+                  {/* Center: Verification Determination */}
+                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex flex-col justify-between items-center text-center">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                      Cross-Agent Consistency
+                    </div>
+                    <div className={`text-2xl font-black mt-1 ${
+                      isConflicting ? 'text-amber-400' : 'text-emerald-400'
+                    }`}>
+                      {reportStatus.evidence_consistency}
+                    </div>
+                    <div className="text-xs text-slate-300 mt-2 px-2">
+                      {isConflicting
+                        ? 'Discordance detected between ML risk and temporal vital trends.'
+                        : 'Analytical trajectory confirms model risk classification.'}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 border-t border-slate-800 pt-2 mt-3 w-full">
+                      Reliability: <b className={isDataCompromised ? 'text-amber-400' : 'text-emerald-400'}>{reportStatus.data_reliability}</b>
+                    </div>
+                  </div>
+
+                  {/* Right: Data Analysis Agent Trajectory */}
+                  <div className="bg-slate-900 p-4 rounded-xl border border-purple-900/60 flex flex-col justify-between">
+                    <div>
+                      <div className="text-[11px] font-bold text-purple-400 uppercase tracking-wider mb-1">
+                        Data Analysis Trajectory
+                      </div>
+                      <div className="text-sm font-bold text-white line-clamp-2">
+                        {dataAnalysis?.pattern_identified?.[0] || 'Physiological metrics stable across window.'}
+                      </div>
+                      <div className="text-xs text-slate-400 mt-2 space-y-0.5">
+                        {dataAnalysis?.trend_metrics?.MAP && (
+                          <div>MAP: <b className="text-slate-200">{dataAnalysis.trend_metrics.MAP.trend}</b> (latest: {dataAnalysis.trend_metrics.MAP.latest_value})</div>
+                        )}
+                        {dataAnalysis?.trend_metrics?.HR && (
+                          <div>HR: <b className="text-slate-200">{dataAnalysis.trend_metrics.HR.trend}</b> (latest: {dataAnalysis.trend_metrics.HR.latest_value})</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-2 mt-3">
+                      Windowed rate-of-change analysis
+                    </div>
+                  </div>
+                </div>
+
+                {/* Deterministic Safety Arbitration Box */}
+                {isSafetyArbitrated ? (
+                  <div className="bg-red-950/40 border border-red-700/80 rounded-xl p-3.5 flex items-start space-x-3">
+                    <span className="text-lg">🛡️</span>
+                    <div className="text-xs text-red-200 flex-1">
+                      <div className="font-bold uppercase tracking-wider text-red-300">
+                        Deterministic Safety Arbitration Override Active
+                      </div>
+                      <p className="mt-0.5 text-slate-300">
+                        {clinicalReasoning?.metadata?.final_priority_source === 'DETERMINISTIC_SAFETY_ARBITRATION'
+                          ? 'The reasoning engine detected an attempt to downgrade priority contrary to deterministic safety rules. The deterministic safety baseline has overridden the decision to protect patient safety.'
+                          : 'Deterministic safety rules actively serving as final boundary constraint.'}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-3 flex items-center justify-between text-xs text-slate-400">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-sm">🛡️</span>
+                      <span>
+                        <b className="text-slate-300">Deterministic Safety Arbitration:</b> Passive surveillance mode (no override triggered — model outputs within safety envelopes).
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">
+                      SAFETY ENVELOPE VERIFIED
                     </span>
-                  )}
+                  </div>
+                )}
+              </div>
+
+              {/* ============================================================= */}
+              {/* SECTION F — THE CLINICAL INTELLIGENCE REPORT (CENTERPIECE)     */}
+              {/* ============================================================= */}
+              <div className="bg-medCard border-2 border-sky-500/40 rounded-2xl p-6 shadow-2xl space-y-6 ring-1 ring-sky-500/20">
+                {/* Header with Title & Level 1 Status */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-medBorder pb-4 gap-3">
+                  <div>
+                    <div className="flex items-center space-x-2.5">
+                      <span className="h-3 w-3 rounded-full bg-sky-400"></span>
+                      <h2 className="text-xl font-black text-white tracking-tight uppercase flex items-center gap-2">
+                        Clinical Intelligence Report
+                        <span className="text-xs font-mono font-normal text-sky-400 px-2 py-0.5 rounded bg-sky-950 border border-sky-800">
+                          16 Structured Sections
+                        </span>
+                      </h2>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Structured synthesis of patient physiology, model risk, cross-agent verification, and grounded medical literature.
+                    </p>
+                  </div>
+
+                  {/* Level 1 Clinical Status Card */}
+                  <div className="flex items-center space-x-3 bg-medDark px-4 py-2 rounded-xl border border-slate-800">
+                    <div className="text-right">
+                      <div className="text-[10px] text-slate-400 uppercase font-mono">Assigned Priority</div>
+                      <div className={`text-base font-extrabold ${
+                        isUrgent ? 'text-red-400' : isElevated ? 'text-amber-400' : 'text-emerald-400'
+                      }`}>
+                        {reportStatus.priority}
+                      </div>
+                    </div>
+                    <div className="h-8 w-px bg-slate-700"></div>
+                    <div>
+                      <div className="text-[10px] text-slate-400 uppercase font-mono">Risk Level</div>
+                      <div className="text-sm font-bold text-slate-200">
+                        {reportStatus.risk_level}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Escalation Pathway Banner */}
-                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3">
-                  <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Escalation Pathway:</div>
-                  <div className="text-xs font-bold text-sky-400 mt-0.5">
-                    {careAction?.escalation_pathway || 'Standard Continuous Floor/ICU Protocol'}
+                {/* Level 2 — Executive Summary Callout Paragraph */}
+                <div className="bg-gradient-to-r from-sky-950/50 via-slate-900 to-indigo-950/40 border border-sky-800/70 rounded-xl p-4 shadow-lg">
+                  <div className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center justify-between mb-1.5">
+                    <span>Executive Clinical Summary (Level 2)</span>
+                    <span className="text-[10px] font-mono text-slate-400">Confidence: {(reportStatus.confidence * 100).toFixed(0)}%</span>
                   </div>
-                  <div className="text-xs text-slate-300 mt-1 italic">
-                    Reason: {careAction?.reason || 'Patient physiological indicators within normal limits.'}
-                  </div>
+                  <p className="text-sm text-slate-200 leading-relaxed font-normal">
+                    {rep.executive_summary || rep.clinical_summary || 'Baseline physiological surveillance active. Patient indicators currently stable within expected tolerances.'}
+                  </p>
                 </div>
 
-                {/* Suggested Actionable Orders Checklist */}
-                <div>
-                  <div className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center justify-between">
-                    <span>Actionable Order Set:</span>
-                    <span className="text-[10px] text-slate-500">Interactive Clinician Checklist</span>
+                {/* Level 3 — Expandable Structured Sections */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                      Detailed Analytical Sections (Level 3)
+                    </h3>
+                    <div className="flex items-center space-x-2 text-xs">
+                      <button
+                        onClick={() => setAllSections(true)}
+                        className="text-sky-400 hover:text-sky-300 font-medium transition"
+                      >
+                        Expand All
+                      </button>
+                      <span className="text-slate-600">•</span>
+                      <button
+                        onClick={() => setAllSections(false)}
+                        className="text-slate-400 hover:text-slate-300 font-medium transition"
+                      >
+                        Collapse All
+                      </button>
+                    </div>
                   </div>
-                  <div className="space-y-1.5">
-                    {(careAction?.suggested_orders && careAction.suggested_orders.length > 0) ? (
-                      careAction.suggested_orders.map((ord, idx) => {
-                        const isChecked = orderChecked[`${selectedPid}_${idx}`];
-                        return (
-                          <label
-                            key={idx}
-                            className={`flex items-start space-x-2.5 p-2 rounded-lg border text-xs cursor-pointer transition ${
-                              isChecked
-                                ? 'bg-emerald-950/20 border-emerald-800/40 text-slate-400 line-through'
-                                : 'bg-slate-900/80 border-medBorder hover:border-slate-700 text-slate-200'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={!!isChecked}
-                              onChange={(e) => setOrderChecked(prev => ({
-                                ...prev,
-                                [`${selectedPid}_${idx}`]: e.target.checked
-                              }))}
-                              className="mt-0.5 rounded border-slate-700 bg-slate-800 text-sky-500 focus:ring-sky-500"
-                            />
-                            <span className="flex-1">{ord}</span>
-                          </label>
-                        );
-                      })
-                    ) : (
-                      <div className="text-xs text-slate-400 p-3 bg-slate-900 rounded-lg border border-slate-800">
-                        Maintain continuous standard observation. No active order escalation needed.
+
+                  {/* 1. Clinical Status */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('clinical_status')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>1. Clinical Status & Reliability</span>
+                        <ProvenanceBadge type="DETERMINISTIC_SAFETY" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.clinical_status ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.clinical_status && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                        <div className="bg-medDark p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">Risk Level:</span>
+                          <span className="font-bold text-white">{reportStatus.risk_level}</span>
+                        </div>
+                        <div className="bg-medDark p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">Priority:</span>
+                          <span className="font-bold text-white">{reportStatus.priority}</span>
+                        </div>
+                        <div className="bg-medDark p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">Data Reliability:</span>
+                          <span className="font-bold text-white">{reportStatus.data_reliability}</span>
+                        </div>
+                        <div className="bg-medDark p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">Evidence Consistency:</span>
+                          <span className="font-bold text-white">{reportStatus.evidence_consistency}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. Key Findings */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('key_findings')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>2. Key Physiological Findings</span>
+                        <ProvenanceBadge type="PATIENT_DATA" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.key_findings ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.key_findings && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs">
+                        <ul className="list-disc list-inside space-y-1 text-slate-300">
+                          {(rep.key_findings && rep.key_findings.length > 0) ? (
+                            rep.key_findings.map((f, i) => <li key={i}>{f}</li>)
+                          ) : (
+                            <li className="text-slate-400 italic">No acute physiological abnormalities detected.</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Physiological Analysis */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('physiological_analysis')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>3. System-by-System Physiological Analysis</span>
+                        <ProvenanceBadge type="PATIENT_DATA" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.physiological_analysis ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.physiological_analysis && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs space-y-1.5 text-slate-300">
+                        {(rep.physiological_analysis && rep.physiological_analysis.length > 0) ? (
+                          rep.physiological_analysis.map((item, idx) => (
+                            <p key={idx} className="bg-medDark/60 p-2 rounded border border-slate-800">{item}</p>
+                          ))
+                        ) : (
+                          <p className="text-slate-400 italic">Cardiovascular and respiratory organ systems operating within baseline parameters.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 4. Temporal Analysis */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('temporal_analysis')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>4. Temporal Trajectory & Drift Rates</span>
+                        <ProvenanceBadge type="TEMPORAL_ANALYSIS" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.temporal_analysis ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.temporal_analysis && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs space-y-1.5 text-slate-300">
+                        {(rep.temporal_analysis && rep.temporal_analysis.length > 0) ? (
+                          rep.temporal_analysis.map((item, idx) => (
+                            <p key={idx} className="bg-medDark/60 p-2 rounded border border-slate-800 font-mono text-[11px]">{item}</p>
+                          ))
+                        ) : (
+                          <p className="text-slate-400 italic">No significant multi-minute slope drift observed.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 5. Risk Interpretation */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('risk_interpretation')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>5. Predictive Risk Model Interpretation</span>
+                        <ProvenanceBadge type="MODEL_OUTPUT" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.risk_interpretation ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.risk_interpretation && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300 leading-relaxed">
+                        {rep.risk_interpretation || 'Model risk output evaluated against observed physiological baseline.'}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 6. Supporting Evidence */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('supporting_evidence')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>6. Corroborating Supporting Evidence</span>
+                        <ProvenanceBadge type="AGENT_VERIFICATION" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.supporting_evidence ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.supporting_evidence && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300">
+                        <ul className="list-disc list-inside space-y-1">
+                          {(rep.supporting_evidence && rep.supporting_evidence.length > 0) ? (
+                            rep.supporting_evidence.map((item, idx) => <li key={idx}>{item}</li>)
+                          ) : (
+                            <li className="text-slate-400 italic">No acute deteriorating findings observed.</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 7. Conflicting Evidence */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('conflicting_evidence')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>7. Conflicting Cross-Agent Evidence</span>
+                        <ProvenanceBadge type="AGENT_VERIFICATION" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.conflicting_evidence ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.conflicting_evidence && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300">
+                        {(rep.conflicting_evidence && rep.conflicting_evidence.length > 0) ? (
+                          <ul className="list-disc list-inside space-y-1 text-amber-200">
+                            {rep.conflicting_evidence.map((item, idx) => <li key={idx}>{item}</li>)}
+                          </ul>
+                        ) : (
+                          <p className="text-slate-400 italic">No conflicting cross-agent evidence detected. Findings are harmonious.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 8. Evidence Synthesis */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('evidence_synthesis')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>8. Narrative Evidence Synthesis</span>
+                        <ProvenanceBadge type="LLM_SYNTHESIS" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.evidence_synthesis ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.evidence_synthesis && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300 leading-relaxed">
+                        {rep.evidence_synthesis || 'Synthesis reconciles multi-channel observations with baseline stability.'}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 9. Medical Evidence / PubMed */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('medical_evidence')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>9. Retrieved Medical Literature (PubMed)</span>
+                        <ProvenanceBadge type="PUBMED_RAG" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.medical_evidence ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.medical_evidence && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 space-y-3">
+                        {(rep.medical_evidence && rep.medical_evidence.length > 0) ? (
+                          rep.medical_evidence.map((med, idx) => {
+                            const isGrounded = med.grounding_status === 'GROUNDED' || med.grounded === true;
+                            return (
+                              <div key={idx} className="bg-medDark p-3.5 rounded-xl border border-teal-900/60 space-y-2 text-xs">
+                                {/* Source Metadata Header */}
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-2 gap-1.5">
+                                  <div>
+                                    <div className="font-bold text-teal-300 text-sm">{med.title}</div>
+                                    <div className="text-[11px] text-slate-400">
+                                      {med.authors && <span>{med.authors} • </span>}
+                                      {med.journal && <span className="italic">{med.journal} </span>}
+                                      {med.year && <span>({med.year})</span>}
+                                      {med.doi && <span className="font-mono"> • DOI: {med.doi}</span>}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center space-x-2">
+                                    <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px]">
+                                      PMID: {med.pmid || 'N/A'}
+                                    </span>
+                                    <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
+                                      isGrounded ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+                                    }`}>
+                                      {isGrounded ? '✓ GROUNDED' : '⚠ UNVERIFIED CLAIM REPLACED'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Partitioned Blocks: Source Excerpt vs Extracted Evidence vs Case Application */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                                  {/* Left: Source Passage & Extracted Claim */}
+                                  <div className="space-y-2">
+                                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-teal-400 block mb-1">
+                                        Source Abstract Excerpt:
+                                      </span>
+                                      <p className="text-[11px] text-slate-300 italic leading-snug">
+                                        "{med.abstract || med.key_evidence}"
+                                      </p>
+                                    </div>
+                                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400 block mb-1">
+                                        Key Biomedical Finding / Threshold:
+                                      </span>
+                                      <p className="text-[11px] text-slate-200">
+                                        {med.key_evidence}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  {/* Right: Case-Specific Interpretation & Retrieval Rationale */}
+                                  <div className="space-y-2">
+                                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-pink-400 block mb-1">
+                                        Bedside Case Application (Decision Support):
+                                      </span>
+                                      <p className="text-[11px] text-slate-200 leading-snug">
+                                        {med.application_to_case}
+                                      </p>
+                                    </div>
+                                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-purple-400 block mb-1">
+                                        Why Retrieved for this Presentation:
+                                      </span>
+                                      <p className="text-[11px] text-slate-300 leading-snug">
+                                        {med.why_retrieved}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="p-3.5 bg-medDark rounded-lg border border-slate-800 text-xs text-slate-400 text-center">
+                            <span className="font-semibold text-slate-300 block mb-1">
+                              {isAdaptiveRAGSkipped ? "Adaptive Literature Gating Active" : "No External Guidance Required"}
+                            </span>
+                            {reportMetadata?.evidence_retrieval_reason || (isAdaptiveRAGSkipped
+                              ? 'Adaptive Gating: Medical literature retrieval bypassed because patient presentation is confident and stable.'
+                              : 'No external literature guidance required for current baseline presentation.')}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 10. Clinical Interpretation */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('clinical_interpretation')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>10. Clinical Reasoning & Underlying Stress Evaluation</span>
+                        <ProvenanceBadge type="LLM_SYNTHESIS" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.clinical_interpretation ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.clinical_interpretation && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300 leading-relaxed">
+                        {rep.clinical_interpretation || 'Continuous monitoring indicates patient remains in baseline compensated state.'}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 11. Uncertainties / Sensor Artifacts */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('uncertainties')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>11. Sensor Noise, Artifacts & Uncertainties</span>
+                        <ProvenanceBadge type="PATIENT_DATA" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.uncertainties ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.uncertainties && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300">
+                        {(rep.uncertainties && rep.uncertainties.length > 0) ? (
+                          <ul className="list-disc list-inside space-y-1 text-amber-200">
+                            {rep.uncertainties.map((u, i) => <li key={i}>{u}</li>)}
+                          </ul>
+                        ) : (
+                          <p className="text-slate-400 italic">No telemetry sensor degradation or significant signal noise detected.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 12. Recommended Actions (CDS) */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('recommended_actions')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>12. Recommended Decision Support Actions (CDS)</span>
+                        <ProvenanceBadge type="DETERMINISTIC_SAFETY" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.recommended_actions ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.recommended_actions && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300 space-y-1.5">
+                        <div className="text-[11px] text-sky-400 font-semibold mb-1">
+                          CLINICAL DECISION SUPPORT GUIDELINES (NOT AUTONOMOUS TREATMENT ORDERS):
+                        </div>
+                        <ul className="list-disc list-inside space-y-1">
+                          {(rep.recommended_actions && rep.recommended_actions.length > 0) ? (
+                            rep.recommended_actions.map((act, i) => <li key={i} className="text-slate-200">{act}</li>)
+                          ) : (
+                            <li className="text-slate-400 italic">Continue standard automated floor surveillance protocol.</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 13. Monitoring Priorities */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('monitoring_priorities')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>13. Bedside Telemetry & Monitoring Priorities</span>
+                        <ProvenanceBadge type="PATIENT_DATA" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.monitoring_priorities ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.monitoring_priorities && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300">
+                        <ul className="list-disc list-inside space-y-1">
+                          {(rep.monitoring_priorities && rep.monitoring_priorities.length > 0) ? (
+                            rep.monitoring_priorities.map((item, idx) => <li key={idx}>{item}</li>)
+                          ) : (
+                            <li className="text-slate-400 italic">Standard multi-parameter continuous telemetry.</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 14. Escalation Rationale */}
+                  <div className="bg-slate-900/80 border border-medBorder rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => toggleSection('escalation_rationale')}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-slate-800/50 transition"
+                    >
+                      <span className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                        <span>14. Urgency Priority & Escalation Rationale</span>
+                        <ProvenanceBadge type="DETERMINISTIC_SAFETY" />
+                      </span>
+                      <span className="text-slate-400 text-xs">{expandedSections.escalation_rationale ? '▼' : '▶'}</span>
+                    </button>
+                    {expandedSections.escalation_rationale && (
+                      <div className="px-4 pb-3 pt-1 border-t border-slate-800/60 text-xs text-slate-300 leading-relaxed">
+                        {rep.escalation_rationale || 'Routine priority assigned based on stable baseline hemodynamics across all observation windows.'}
                       </div>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Alert Center & Clinician Acknowledgment (5 cols) */}
-              <div className="lg:col-span-5 bg-medCard border border-medBorder rounded-xl p-5 space-y-4 flex flex-col justify-between">
-                <div>
+              {/* ============================================================= */}
+              {/* SECTION H — RECOMMENDED CLINICAL DECISION SUPPORT & WORKFLOWS */}
+              {/* ============================================================= */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left: Care Coordination Orders & Action Plan (7 cols) */}
+                <div className="lg:col-span-7 bg-medCard border border-medBorder rounded-xl p-5 space-y-4 shadow-xl">
                   <div className="flex items-center justify-between border-b border-medBorder pb-3">
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      Clinical Alert Center
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
-                        Bed {selectedPid}
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        Care Coordination Action Plan
+                        <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${
+                          isUrgent ? 'bg-red-500 text-white' :
+                          isElevated ? 'bg-amber-500 text-black' :
+                          'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        }`}>
+                          Priority: {careAction?.priority || 'ROUTINE'}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Deterministic bedside tasking & decision support workflow translation (Clinical Decision Support Only)
+                      </p>
+                    </div>
+
+                    {careAction?.clinician_review_required && (
+                      <span className="text-xs bg-red-950/80 border border-red-700 text-red-300 px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-red-400 animate-ping"></span>
+                        Clinician Review Required
                       </span>
-                    </h3>
-                    <span className="text-[10px] text-slate-400 font-mono">NEW → ACTIVE → ACK → RESOLVED</span>
+                    )}
                   </div>
 
-                  {/* Active Alerts for this patient */}
-                  <div className="mt-3 space-y-2">
-                    {patientDetail?.active_alerts && patientDetail.active_alerts.length > 0 ? (
-                      patientDetail.active_alerts.map(al => (
-                        <div
-                          key={al.alert_id}
-                          className={`p-3 rounded-lg border flex flex-col space-y-2 ${
-                            al.state === 'NEW' ? 'bg-red-950/50 border-red-700 text-red-100' :
-                            al.state === 'ACTIVE' ? 'bg-amber-950/40 border-amber-700 text-amber-100' :
-                            'bg-slate-900 border-slate-700 text-slate-300'
-                          }`}
+                  {/* Escalation Pathway Banner */}
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3">
+                    <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                      Assigned Hospital Escalation Pathway:
+                    </div>
+                    <div className="text-xs font-bold text-sky-400 mt-0.5">
+                      {careAction?.escalation_pathway || 'Standard Continuous Floor Surveillance Protocol'}
+                    </div>
+                    <div className="text-xs text-slate-300 mt-1 italic">
+                      Clinical Reason: {careAction?.reason || 'Vitals and analytical trend indicators within normal limits.'}
+                    </div>
+                  </div>
+
+                  {/* Suggested Actionable Orders Checklist */}
+                  <div>
+                    <div className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center justify-between">
+                      <span>Recommended Clinician Review & Decision Support Checklist:</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Requires Bedside Clinician Verification</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {(careAction?.suggested_orders && careAction.suggested_orders.length > 0) ? (
+                        careAction.suggested_orders.map((ord, idx) => {
+                          const isChecked = orderChecked[`${selectedPid}_${idx}`];
+                          return (
+                            <label
+                              key={idx}
+                              className={`flex items-start space-x-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition ${
+                                isChecked
+                                  ? 'bg-emerald-950/20 border-emerald-800/40 text-slate-400 line-through'
+                                  : 'bg-slate-900/80 border-medBorder hover:border-slate-700 text-slate-200'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={!!isChecked}
+                                onChange={(e) => setOrderChecked(prev => ({
+                                  ...prev,
+                                  [`${selectedPid}_${idx}`]: e.target.checked
+                                }))}
+                                className="mt-0.5 rounded border-slate-700 bg-slate-800 text-sky-500 focus:ring-sky-500"
+                              />
+                              <span className="flex-1">{ord}</span>
+                            </label>
+                          );
+                        })
+                      ) : (
+                        <div className="text-xs text-slate-400 p-3 bg-slate-900 rounded-lg border border-slate-800">
+                          Maintain continuous standard observation. No active clinical order escalation required.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Clinical Alert Center & Lifecycle Timeline (5 cols) */}
+                <div className="lg:col-span-5 bg-medCard border border-medBorder rounded-xl p-5 space-y-4 flex flex-col justify-between shadow-xl">
+                  <div>
+                    <div className="flex items-center justify-between border-b border-medBorder pb-3">
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        Clinical Alert Center
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
+                          Bed {selectedPid}
+                        </span>
+                      </h3>
+                      <span className="text-[10px] text-slate-400 font-mono">NEW → ACTIVE → ACK → RESOLVED</span>
+                    </div>
+
+                    {/* Active Alerts for this patient */}
+                    <div className="mt-3 space-y-2">
+                      {patientDetail?.active_alerts && patientDetail.active_alerts.length > 0 ? (
+                        patientDetail.active_alerts.map(al => (
+                          <div
+                            key={al.alert_id}
+                            className={`p-3.5 rounded-lg border flex flex-col space-y-2 ${
+                              al.state === 'NEW' ? 'bg-red-950/50 border-red-700 text-red-100' :
+                              al.state === 'ACTIVE' ? 'bg-amber-950/40 border-amber-700 text-amber-100' :
+                              'bg-slate-900 border-slate-700 text-slate-300'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                                al.state === 'NEW' ? 'bg-red-600 text-white animate-pulse' :
+                                al.state === 'ACTIVE' ? 'bg-amber-600 text-black' :
+                                'bg-sky-600 text-white'
+                              }`}>
+                                [{al.state}] {al.severity}
+                              </span>
+                              <span className="text-[11px] text-slate-400 font-mono">
+                                Active Duration: {al.duration_seconds}s
+                              </span>
+                            </div>
+
+                            <div className="text-xs">
+                              <span className="font-semibold text-white">Breached Signals: </span>
+                              <span className="text-red-300 font-mono">{al.affected_vitals?.join(', ')}</span>
+                            </div>
+
+                            {al.acknowledged_by ? (
+                              <div className="text-[11px] text-emerald-400 font-medium">
+                                ✓ Acknowledged by {al.acknowledged_by}
+                              </div>
+                            ) : (
+                              <div className="flex items-center space-x-2 pt-1">
+                                <button
+                                  onClick={() => handleAcknowledgeAlert(al.alert_id)}
+                                  className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-1.5 px-3 rounded text-xs transition shadow"
+                                >
+                                  Acknowledge Alert (Clinician Review)
+                                </button>
+                                <button
+                                  onClick={() => handleResolveAlert(al.alert_id)}
+                                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-1.5 px-3 rounded text-xs transition"
+                                >
+                                  Resolve Alert
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-lg text-center text-xs text-slate-400">
+                          <span className="text-emerald-400 font-semibold block mb-1">✓ No Active Clinical Alerts</span>
+                          Vital parameters are within tolerated boundaries.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Compact Lifecycle Progression Banner */}
+                  <div className="bg-slate-950/80 p-3 rounded-lg border border-slate-800 text-[11px] text-slate-400">
+                    <div className="font-semibold text-slate-300 mb-1.5 uppercase tracking-wider text-[10px]">
+                      Alert Progression Lifecycle:
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                      <span className="text-sky-400 font-bold">1. Observation</span>
+                      <span>→</span>
+                      <span className="text-indigo-400 font-bold">2. Detection</span>
+                      <span>→</span>
+                      <span className="text-purple-400 font-bold">3. Risk Check</span>
+                      <span>→</span>
+                      <span className="text-amber-400 font-bold">4. Verification</span>
+                      <span>→</span>
+                      <span className="text-pink-400 font-bold">5. Clinical Report</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </main>
+          ) : (
+            /* =============================================================== */
+            /* TAB 2: RESEARCH & SYSTEM DEMONSTRATION VIEW                     */
+            /* =============================================================== */
+            <main className="flex-1 p-6 space-y-6 max-w-7xl mx-auto w-full">
+              {/* Research View Header Banner */}
+              <div className="bg-gradient-to-r from-indigo-950/60 via-slate-900 to-purple-950/60 border border-indigo-700/60 rounded-2xl p-5 shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
+                      Research, Evaluation & Diagnostic Controls
+                      <span className="text-xs font-mono font-normal text-indigo-300 px-2.5 py-0.5 rounded-full bg-indigo-950 border border-indigo-800">
+                        Examiner & Demo Sandbox
+                      </span>
+                    </h2>
+                    <p className="text-xs text-slate-300 mt-1">
+                      Separated evaluation environment for real dataset loading, fault injection, live event logs, and latency monitoring.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setActiveTab('clinical')}
+                    className="text-xs bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 font-bold px-3 py-1.5 rounded-lg transition self-start sm:self-auto"
+                  >
+                    ← Return to Clinical CDS View
+                  </button>
+                </div>
+              </div>
+
+              {/* Research Grid: Dataset Loader & Synthetic Scenarios */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+                {/* 1. Real Dataset Patient Loader */}
+                <div className="bg-medCard border border-teal-800/60 rounded-xl p-5 shadow-xl flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between border-b border-medBorder pb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-teal-300">Real Clinical Dataset Loader</h3>
+                        <p className="text-xs text-slate-400 mt-0.5">Stream authentic physiological recordings into the multi-agent pipeline</p>
+                      </div>
+                      <span className="text-[10px] font-mono bg-teal-950 text-teal-400 border border-teal-800 px-2 py-0.5 rounded">
+                        VitalDB & MIMIC-IV
+                      </span>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      <div>
+                        <label className="text-xs font-semibold text-slate-300 block mb-1">Select Cohort Adapter:</label>
+                        <select
+                          value={selectedAdapter}
+                          onChange={(e) => {
+                            setSelectedAdapter(e.target.value);
+                            const cases = availableDatasets[e.target.value] || [];
+                            setSelectedCaseId(cases.length > 0 ? String(cases[0]) : '');
+                          }}
+                          className="w-full text-xs bg-slate-900 border border-slate-700 text-slate-200 py-2 px-3 rounded-lg"
                         >
-                          <div className="flex items-center justify-between">
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                              al.state === 'NEW' ? 'bg-red-600 text-white animate-pulse' :
-                              al.state === 'ACTIVE' ? 'bg-amber-600 text-black' :
-                              'bg-sky-600 text-white'
-                            }`}>
-                              [{al.state}] {al.severity}
-                            </span>
-                            <span className="text-[11px] text-slate-400 font-mono">
-                              Duration: {al.duration_seconds}s
-                            </span>
-                          </div>
+                          <option value="vitaldb">VitalDB Surgical ICU Cohort (High-frequency physiological recordings)</option>
+                          <option value="mimic">MIMIC-IV Critical Care Database (Bedside intensive care observations)</option>
+                        </select>
+                      </div>
 
-                          <div className="text-xs">
-                            <span className="font-semibold text-white">Breached: </span>
-                            <span className="text-red-300 font-mono">{al.affected_vitals?.join(', ')}</span>
-                          </div>
+                      <div>
+                        <label className="text-xs font-semibold text-slate-300 block mb-1">Select Verified Case ID:</label>
+                        <select
+                          value={selectedCaseId}
+                          onChange={(e) => setSelectedCaseId(e.target.value)}
+                          className="w-full text-xs bg-slate-900 border border-slate-700 text-slate-200 py-2 px-3 rounded-lg font-mono"
+                        >
+                          {(availableDatasets[selectedAdapter] || []).map(cid => (
+                            <option key={cid} value={String(cid)}>Case #{cid}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
 
-                          {al.acknowledged_by ? (
-                            <div className="text-[11px] text-emerald-400 font-medium">
-                              ✓ Acknowledged by {al.acknowledged_by}
-                            </div>
-                          ) : (
-                            <div className="flex items-center space-x-2 pt-1">
-                              <button
-                                onClick={() => handleAcknowledgeAlert(al.alert_id)}
-                                className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-1.5 px-3 rounded text-xs transition shadow"
-                              >
-                                Acknowledge Alert
-                              </button>
-                              <button
-                                onClick={() => handleResolveAlert(al.alert_id)}
-                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-1.5 px-3 rounded text-xs transition"
-                              >
-                                Resolve
-                              </button>
-                            </div>
-                          )}
+                  <div className="mt-4 pt-3 border-t border-medBorder">
+                    <button
+                      disabled={loadingDataset || !selectedCaseId}
+                      onClick={handleLoadDatasetPatient}
+                      className="w-full text-xs bg-teal-800 hover:bg-teal-700 border border-teal-600 py-2.5 px-4 rounded-lg font-bold text-white transition disabled:opacity-50 shadow"
+                    >
+                      {loadingDataset ? 'Loading Case Telemetry into Pipeline...' : `Load Case #${selectedCaseId} into Live Surveillance`}
+                    </button>
+                    {datasetLoadMsg && (
+                      <p className={`text-xs mt-2 font-medium ${datasetLoadMsg.startsWith('✓') ? 'text-teal-400' : 'text-red-400'}`}>
+                        {datasetLoadMsg}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Synthetic Fault Injection Sandbox (Demo Only) */}
+                <div className="bg-medCard border border-medBorder rounded-xl p-5 shadow-xl flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between border-b border-medBorder pb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-amber-300">Fault Injection & Simulation Sandbox</h3>
+                        <p className="text-xs text-slate-400 mt-0.5">Test deterministic safety arbitration and sensor anomaly detection</p>
+                      </div>
+                      <span className="text-[10px] font-mono bg-amber-950 text-amber-400 border border-amber-800 px-2 py-0.5 rounded">
+                        Testing Only
+                      </span>
+                    </div>
+
+                    <div className="mt-3 text-xs text-slate-300">
+                      Currently testing: <b className="text-white">Bed {selectedPid} ({activePatient?.scenario || 'STABLE'})</b>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                      <button
+                        disabled={triggeringScenario}
+                        onClick={() => handleTriggerScenario('STABLE')}
+                        className="text-xs bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2 px-3 rounded-lg font-medium text-slate-200 transition"
+                      >
+                        Stable Baseline
+                      </button>
+                      <button
+                        disabled={triggeringScenario}
+                        onClick={() => handleTriggerScenario('GRADUAL_DETERIORATION')}
+                        className="text-xs bg-red-950/70 hover:bg-red-900 border border-red-800 py-2 px-3 rounded-lg font-medium text-red-300 transition"
+                      >
+                        Sepsis Deterioration
+                      </button>
+                      <button
+                        disabled={triggeringScenario}
+                        onClick={() => handleTriggerScenario('SUDDEN_ABNORMALITY')}
+                        className="text-xs bg-purple-950/70 hover:bg-purple-900 border border-purple-800 py-2 px-3 rounded-lg font-medium text-purple-300 transition"
+                      >
+                        Sudden Hemodynamic Shock
+                      </button>
+                      <button
+                        disabled={triggeringScenario}
+                        onClick={() => handleTriggerScenario('RECOVERY')}
+                        className="text-xs bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-800 py-2 px-3 rounded-lg font-medium text-emerald-300 transition"
+                      >
+                        Post-Intervention Recovery
+                      </button>
+                      <button
+                        disabled={triggeringScenario}
+                        onClick={() => handleTriggerScenario('NOISY_SENSOR')}
+                        className="text-xs bg-amber-950/70 hover:bg-amber-900 border border-amber-800 py-2 px-3 rounded-lg font-medium text-amber-300 transition"
+                      >
+                        Sensor Noise Artifact
+                      </button>
+                      <button
+                        disabled={triggeringScenario}
+                        onClick={() => handleTriggerScenario('MISSING_DATA')}
+                        className="text-xs bg-slate-900 hover:bg-slate-800 border border-slate-700 py-2 px-3 rounded-lg font-medium text-slate-400 transition"
+                      >
+                        Missing Telemetry Lead
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400 border-t border-medBorder pt-3 mt-4">
+                    Note: Fault injection modifies synthetic telemetry streams to demonstrate cross-agent arbitration and data reliability gating.
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Research Metrics & System Event Log */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* System Metrics & Adaptive Execution Stats (5 cols) */}
+                <div className="lg:col-span-5 bg-medCard border border-medBorder rounded-xl p-5 space-y-4 shadow-xl">
+                  <h3 className="text-sm font-bold text-white border-b border-medBorder pb-3">
+                    Adaptive Pipeline Runtime Metrics
+                  </h3>
+                  <div className="space-y-2.5 text-xs">
+                    <div className="flex justify-between items-center bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                      <span className="text-slate-400">Total Telemetry Observations:</span>
+                      <span className="font-mono font-bold text-white">{systemHealth?.runtime_metrics?.total_observations_evaluated || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                      <span className="text-slate-400">Adaptive Gated Bypasses:</span>
+                      <span className="font-mono font-bold text-sky-400">{systemHealth?.runtime_metrics?.routine_bypassed_cycles || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                      <span className="text-slate-400">Supervisor Status:</span>
+                      <span className="font-mono font-bold text-emerald-400">
+                        {systemHealth?.all_healthy ? "ALL 5 AGENTS HEALTHY" : "DEGRADED"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                      <span className="text-slate-400">Live SSE Subscribers:</span>
+                      <span className="font-mono font-bold text-purple-400">1 Client Connected</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Real-time SSE Stream Terminal (7 cols) */}
+                <div className="lg:col-span-7 bg-medCard border border-medBorder rounded-xl p-5 shadow-xl flex flex-col justify-between">
+                  <div className="flex items-center justify-between border-b border-medBorder pb-3">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      Live Multi-Agent Event Bus
+                      <span className="text-[10px] font-mono bg-sky-950 text-sky-400 border border-sky-800 px-2 py-0.5 rounded">
+                        /api/events/stream
+                      </span>
+                    </h3>
+                    <button
+                      onClick={() => setEventStreamLogs([])}
+                      className="text-[10px] text-slate-400 hover:text-slate-200"
+                    >
+                      Clear Log
+                    </button>
+                  </div>
+
+                  <div className="mt-3 bg-medDark rounded-lg p-3 border border-slate-800 font-mono text-[11px] h-64 overflow-y-auto space-y-1">
+                    {eventStreamLogs.length > 0 ? (
+                      eventStreamLogs.map((log, idx) => (
+                        <div key={idx} className="flex items-start space-x-2">
+                          <span className="text-slate-500">[{log.time}]</span>
+                          <span className={`font-semibold ${
+                            log.type === 'clinical_reasoning' ? 'text-pink-400' :
+                            log.type === 'care_coordination' ? 'text-emerald-400' :
+                            log.type === 'risk_prediction' ? 'text-indigo-400' :
+                            log.type === 'data_analysis' ? 'text-purple-400' :
+                            log.type === 'monitoring_alert' ? 'text-red-400' :
+                            'text-sky-400'
+                          }`}>
+                            {log.type}
+                          </span>
+                          <span className="text-slate-300 truncate flex-1">
+                            {JSON.stringify(log.data).slice(0, 80)}...
+                          </span>
                         </div>
                       ))
                     ) : (
-                      <div className="p-4 bg-slate-900/60 border border-slate-800 rounded-lg text-center text-xs text-slate-400">
-                        <span className="text-emerald-400 font-semibold block mb-1">✓ No Active Alerts</span>
-                        Physiological parameters within tolerated safe boundaries.
+                      <div className="text-slate-500 italic text-center py-10">
+                        Listening for multi-agent events on Server-Sent Events stream...
                       </div>
                     )}
                   </div>
                 </div>
 
-                {/* Supervisor Health Footer */}
-                <div className="bg-slate-950/80 p-3 rounded-lg border border-slate-800 text-[11px] text-slate-400">
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium text-slate-300">Supervisor Health:</span>
-                    <span className="text-emerald-400 font-bold font-mono">
-                      {systemHealth?.all_healthy ? "100% HEALTHY" : "DEGRADED"}
+                {/* 3. Episodic Patient Memory & Clinician Feedback Inspector (12 cols) */}
+                <div className="lg:col-span-12 bg-medCard border border-medBorder rounded-xl p-5 shadow-xl space-y-3">
+                  <div className="flex items-center justify-between border-b border-medBorder pb-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        Episodic Patient Memory & Clinician Feedback Audit Trail
+                        <span className="text-xs font-mono font-normal text-sky-400 px-2 py-0.5 rounded bg-sky-950 border border-sky-800">
+                          Bed {selectedPid}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Inspects clinician alert acknowledgments, resolutions, and temporal context injected into reasoning prompts.
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono bg-slate-800 text-slate-300 px-2.5 py-1 rounded">
+                      Episodes: {patientMemory?.count || 0}
                     </span>
                   </div>
-                  <div className="flex justify-between items-center mt-1">
-                    <span>Evaluated Observations:</span>
-                    <span className="font-mono text-slate-200">{systemHealth?.runtime_metrics?.total_observations_evaluated || 0}</span>
-                  </div>
-                  <div className="flex justify-between items-center mt-0.5">
-                    <span>Routine Bypassed (Adaptive):</span>
-                    <span className="font-mono text-sky-300">{systemHealth?.runtime_metrics?.routine_bypassed_cycles || 0}</span>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                    {/* Injected Memory Context String */}
+                    <div className="bg-slate-900/90 rounded-lg p-3 border border-slate-800">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                        Injected Memory Prompt Context:
+                      </span>
+                      <p className="text-xs font-mono text-slate-300 bg-medDark p-2.5 rounded border border-slate-800 whitespace-pre-wrap">
+                        {patientMemory?.context_prompt || 'No prior alert or clinician feedback history for this patient.'}
+                      </p>
+                    </div>
+
+                    {/* Historical Episode Cards */}
+                    <div className="bg-slate-900/90 rounded-lg p-3 border border-slate-800 max-h-48 overflow-y-auto space-y-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                        Recorded Feedback Episodes:
+                      </span>
+                      {(patientMemory?.episodes && patientMemory.episodes.length > 0) ? (
+                        patientMemory.episodes.map((ep, idx) => (
+                          <div key={idx} className="p-2 rounded bg-medDark border border-slate-800 text-xs space-y-1">
+                            <div className="flex justify-between font-mono text-[10px] text-slate-400">
+                              <span>Action: <b className="text-sky-400">{ep.clinician_action || ep.action}</b></span>
+                              <span>By: {ep.clinician_id || 'Clinician'}</span>
+                            </div>
+                            <div className="text-slate-300 text-[11px]">
+                              {ep.resolution_notes || ep.reason || ep.summary || 'Alert acknowledged and evaluated.'}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-xs text-slate-500 italic p-2">
+                          No episodes recorded yet. Acknowledging or resolving an alert logs an episodic memory entry with clinician attribution.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
+            </main>
+          )}
 
+          {/* ================================================================= */}
+          {/* 4. CLINICAL FOOTER                                                */}
+          {/* ================================================================= */}
+          <footer className="bg-medCard border-t border-medBorder px-6 py-3 text-xs text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-2 mt-auto">
+            <div>
+              <span className="font-semibold text-slate-300">CareMatrix</span> — Intelligent ICU Monitoring & Decision-Support System
             </div>
-          </main>
+            <div className="flex items-center space-x-4">
+              <span>Supervisor: <b className="text-emerald-400">Active</b></span>
+              <span>•</span>
+              <span>Decision Support Only</span>
+              <span>•</span>
+              <span className="text-slate-500">v2.0 Clinical Intelligence</span>
+            </div>
+          </footer>
         </div>
       );
     }
 
-    ReactDOM.render(<App />, document.getElementById('root'));
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
   </script>
 </body>
 </html>

@@ -171,6 +171,7 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
             "event_id": latest_cr.get("event_id"),
             "timestamp": latest_cr.get("timestamp", time.time()),
             "clinical_report": report,
+            "metadata": latest_cr.get("metadata", {}),
         })
 
     @app.route("/api/patients/<int:patient_id>/vitals", methods=["GET"])
