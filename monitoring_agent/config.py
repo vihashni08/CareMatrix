@@ -13,6 +13,10 @@ DEVIATION_THRESHOLDS = {
     "SpO2": 0.05,
     "RR": 0.40,
 }
+# Prototype absolute guardrails for acute hypotension and tachycardia.
+# These are configurable engineering triggers, not clinically validated criteria.
+ABSOLUTE_HIGH_RISK_MAP_THRESHOLD = 65.0
+ABSOLUTE_HIGH_RISK_HR_THRESHOLD = 110.0
 PERSISTENCE_SECONDS = 10
 
 # ---------------------------------------------------------------------------

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from communication.events import MonitoringEvent, RiskDecision, RiskDecisionEvent
 from communication.orchestration import determine_analysis_requirements
+
+ABSOLUTE_HIGH_RISK_MAP_THRESHOLD = 65.0
+ABSOLUTE_HIGH_RISK_HR_THRESHOLD = 110.0
+SAFETY_PROBABILITY_FLOOR = 0.86
 
 
 class RiskDecisionEngine:
@@ -38,6 +43,32 @@ class RiskDecisionEngine:
     ) -> RiskDecisionEvent:
         """Formulate an explicit decision based on ML model probability vs threshold."""
         vitals_str = ", ".join(event.affected_vitals)
+        model_probability = float(probability)
+        safety_triggers: list[str] = []
+
+        for feature_name, predicate, description in (
+            (
+                "MAP_latest",
+                lambda value: value < ABSOLUTE_HIGH_RISK_MAP_THRESHOLD,
+                f"MAP below {ABSOLUTE_HIGH_RISK_MAP_THRESHOLD:g}",
+            ),
+            (
+                "HR_latest",
+                lambda value: value > ABSOLUTE_HIGH_RISK_HR_THRESHOLD,
+                f"HR above {ABSOLUTE_HIGH_RISK_HR_THRESHOLD:g}",
+            ),
+        ):
+            try:
+                feature_value = float(features.get(feature_name, float("nan")))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(feature_value) and predicate(feature_value):
+                safety_triggers.append(f"{description} ({feature_value:.1f})")
+
+        if safety_triggers:
+            probability = max(model_probability, SAFETY_PROBABILITY_FLOOR)
+        else:
+            probability = model_probability
 
         if probability >= threshold:
             decision = RiskDecision.HIGH_RISK
@@ -66,6 +97,15 @@ class RiskDecisionEngine:
         )
 
         event_metadata = dict(metadata or {})
+        if safety_triggers:
+            event_metadata.update({
+                "model_probability": model_probability,
+                "physiological_safety_override": {
+                    "applied": True,
+                    "triggers": safety_triggers,
+                    "probability_floor": SAFETY_PROBABILITY_FLOOR,
+                },
+            })
 
         return RiskDecisionEvent(
             patient_id=event.patient_id,

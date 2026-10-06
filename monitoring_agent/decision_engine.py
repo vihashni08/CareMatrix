@@ -8,6 +8,8 @@ import pandas as pd
 
 from communication.events import MonitoringDecision, MonitoringEvent
 from monitoring_agent.config import (
+    ABSOLUTE_HIGH_RISK_HR_THRESHOLD,
+    ABSOLUTE_HIGH_RISK_MAP_THRESHOLD,
     ALERT_COOLDOWN_SECONDS,
     DEVIATION_THRESHOLDS,
     RECOVERY_DURATION_SECONDS,
@@ -58,14 +60,24 @@ class MonitoringDecisionEngine:
         # Classify per-vital severity
         vital_severity: dict[str, str] = {}
         alert_eligible_vitals: list[str] = []
+        absolute_alert_vitals: list[str] = []
 
         for vital in VITAL_COLUMNS:
             dev = latest_deviations.get(vital, 0.0)
             is_invalid = invalid_mask.get(vital, False)
             base_thresh = DEVIATION_THRESHOLDS.get(vital, 0.20)
+            value = latest_clean_values.get(vital)
 
             vital_sev = "normal"
-            if baseline_ready and not is_invalid and pd.notna(dev):
+            if not is_invalid and pd.notna(value):
+                if vital == "MAP" and value < ABSOLUTE_HIGH_RISK_MAP_THRESHOLD:
+                    vital_sev = "severe"
+                    absolute_alert_vitals.append(vital)
+                elif vital == "HR" and value > ABSOLUTE_HIGH_RISK_HR_THRESHOLD:
+                    vital_sev = "severe"
+                    absolute_alert_vitals.append(vital)
+
+            if vital_sev == "normal" and baseline_ready and not is_invalid and pd.notna(dev):
                 for s_level in reversed(SEVERITY_LEVELS):  # critical down to mild
                     if dev >= base_thresh * SEVERITY_MULTIPLIERS[s_level]:
                         vital_sev = s_level
@@ -86,7 +98,7 @@ class MonitoringDecisionEngine:
         # Severe / critical allow single vital; mild / moderate require >= 2 vitals
         required_vitals = SEVERITY_MIN_VITALS.get(overall_severity, 2)
         is_candidate = (
-            baseline_ready
+            (baseline_ready or bool(absolute_alert_vitals))
             and overall_severity != "normal"
             and len(alert_eligible_vitals) >= required_vitals
         )
@@ -137,6 +149,7 @@ class MonitoringDecisionEngine:
             "alert_eligible_vitals": alert_eligible_vitals,
             "is_candidate": is_candidate,
             "is_persistent": is_persistent,
+            "absolute_alert_vitals": absolute_alert_vitals,
             "vital_details": vital_details,
         }
 

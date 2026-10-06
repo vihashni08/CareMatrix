@@ -162,17 +162,15 @@ class TestDatasetAPIEndpoints(unittest.TestCase):
     def tearDown(self):
         self.rt.stop()
 
-    def test_get_datasets_returns_both_adapters(self):
-        """GET /api/datasets must return a dict with 'vitaldb' and 'mimic' keys."""
+    def test_get_datasets_returns_vitaldb_only(self):
+        """GET /api/datasets exposes only the supported VitalDB adapter."""
         resp = self.client.get("/api/datasets")
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
         self.assertIn("vitaldb", data)
-        self.assertIn("mimic", data)
+        self.assertNotIn("mimic", data)
         self.assertIsInstance(data["vitaldb"], list)
-        self.assertIsInstance(data["mimic"], list)
         self.assertGreater(len(data["vitaldb"]), 0)
-        self.assertGreater(len(data["mimic"]), 0)
 
     def test_post_dataset_patient_vitaldb(self):
         """POST /api/patients/dataset must create a new patient and return 201 with data_source."""
@@ -186,16 +184,16 @@ class TestDatasetAPIEndpoints(unittest.TestCase):
         self.assertIn("data_source", data)
         self.assertIn("VitalDB", data["data_source"])
 
-    def test_post_dataset_patient_mimic(self):
-        """POST /api/patients/dataset for MIMIC must return data_source containing 'MIMIC'."""
+    def test_post_dataset_patient_rejects_unsupported_adapter(self):
+        """POST /api/patients/dataset rejects adapters no longer exposed by the API."""
         resp = self.client.post(
             "/api/patients/dataset",
             data=json.dumps({"case_id": 1001, "adapter": "mimic"}),
             content_type="application/json",
         )
-        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.status_code, 400)
         data = json.loads(resp.data)
-        self.assertIn("MIMIC", data["data_source"])
+        self.assertIn("Unsupported adapter", data["error"])
 
     def test_post_dataset_patient_missing_case_id(self):
         """POST /api/patients/dataset without case_id must return 400."""

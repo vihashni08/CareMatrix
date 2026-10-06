@@ -36,7 +36,7 @@ class PatientStateRecord:
 
         self.current_risk_level: str = "LOW RISK"
         self.current_risk_probability: float | None = None
-        self.risk_model_name: str = "RandomForestClassifier"
+        self.risk_model_name: str | None = None
 
         self.latest_monitoring_event: dict[str, Any] | None = None
         self.latest_risk_decision: dict[str, Any] | None = None
@@ -116,6 +116,7 @@ class PatientStateRecord:
                 "scenario": self.scenario,
                 "risk_level": self.current_risk_level,
                 "risk_probability": round(self.current_risk_probability, 3) if self.current_risk_probability is not None else None,
+                "risk_model_name": self.risk_model_name,
                 "active_alert_count": len(alerts),
                 "has_active_alert": len(alerts) > 0,
                 "latest_vitals": self.latest_vitals,

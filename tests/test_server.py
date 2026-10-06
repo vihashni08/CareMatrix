@@ -36,6 +36,7 @@ class TestServerAPI(unittest.TestCase):
         self.assertIn("runtime_metrics", data)
         self.assertTrue(data["all_healthy"])
         self.assertEqual(data["total_agents"], 5)
+        self.assertEqual(data["risk_model_name"], self.runtime.risk_agent.model_name)
 
     def test_get_patients_endpoint(self):
         res = self.client.get("/api/patients")

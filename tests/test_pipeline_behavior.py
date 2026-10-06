@@ -21,6 +21,7 @@ from communication.events import (
 from monitoring_agent.decision_engine import MonitoringDecisionEngine
 from monitoring_agent.monitoring_agent import MonitoringAgent
 from monitoring_agent.state import PatientMonitoringState, VITAL_COLUMNS
+from risk_agent.decision_engine import RiskDecisionEngine
 from data_analysis_agent.analyzer import assess_window_quality
 from data_analysis_agent.data_analysis_agent import DataAnalysisAgent
 from clinical_reasoning_agent.clinical_reasoning_agent import ClinicalReasoningAgent
@@ -111,6 +112,76 @@ class PipelineBehaviorTests(unittest.TestCase):
         self.assertTrue(event.metadata.get("sensor_disconnected"))
         self.assertTrue(event.metadata.get("verification_required"))
         self.assertIn("HR", event.affected_vitals)
+
+    def test_absolute_map_or_hr_threshold_triggers_despite_baseline_drift(self):
+        """Absolute MAP/HR guardrails still alert when relative deviations look stable."""
+        state = PatientMonitoringState(case_id=102)
+        engine = MonitoringDecisionEngine()
+        for index in range(20):
+            state.add_observation({
+                "timestamp": float(index),
+                "HR": 100.0,
+                "MAP": 70.0,
+                "SpO2": 98.0,
+                "RR": 14.0,
+            })
+
+        result = None
+        for index in range(5):
+            state.add_observation({
+                "timestamp": 20.0 + index,
+                "HR": 117.0,
+                "MAP": 56.0,
+                "SpO2": 98.0,
+                "RR": 14.0,
+            })
+            decision, event, _ = engine.evaluate(
+                state=state,
+                latest_clean_values={"HR": 117.0, "MAP": 56.0, "SpO2": 98.0, "RR": 14.0},
+                latest_baselines={"HR": 117.0, "MAP": 56.0, "SpO2": 98.0, "RR": 14.0},
+                latest_deviations={"HR": 0.0, "MAP": 0.0, "SpO2": 0.0, "RR": 0.0},
+                latest_trends={"HR": "stable", "MAP": "stable", "SpO2": "stable", "RR": "stable"},
+                latest_signal_quality={"HR": "good", "MAP": "good", "SpO2": "good", "RR": "good"},
+                invalid_mask={"HR": False, "MAP": False, "SpO2": False, "RR": False},
+            )
+            result = (decision, event)
+
+        decision, event = result
+        self.assertEqual(decision, MonitoringDecision.ESCALATE_TO_RISK)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.severity, "severe")
+        self.assertIn("HR", event.affected_vitals)
+        self.assertIn("MAP", event.affected_vitals)
+
+    def test_risk_safety_override_floors_probability_for_crashing_vitals(self):
+        """A low model score cannot suppress explicitly unsafe MAP/HR measurements."""
+        event = MonitoringEvent(
+            patient_id=102,
+            event_id="case_102_absolute_threshold",
+            timestamp=300.0,
+            event_type="alert_started",
+            severity="severe",
+            affected_vitals=["HR", "MAP"],
+            current_values={"HR": 117.0, "MAP": 56.0},
+            baseline_values={"HR": 100.0, "MAP": 70.0},
+            deviation_values={"HR": 0.0, "MAP": 0.0},
+            trends={"HR": "stable", "MAP": "stable"},
+            signal_quality={"HR": "good", "MAP": "good"},
+            persistence_duration=5,
+            recommended_action="assess_patient_risk",
+        )
+        decision = RiskDecisionEngine(default_threshold=0.51).decide_from_prediction(
+            event=event,
+            probability=0.391,
+            threshold=0.51,
+            model_name="ExtraTreesClassifier",
+            features={"HR_latest": 117.0, "MAP_latest": 56.0},
+        )
+
+        self.assertEqual(decision.decision, "HIGH_RISK")
+        self.assertGreaterEqual(decision.risk_probability, 0.85)
+        self.assertEqual(decision.metadata["model_probability"], 0.391)
+        self.assertTrue(decision.metadata["physiological_safety_override"]["applied"])
 
     def test_corroborated_high_risk_does_not_force_data_verification(self):
         """Corroborated high-risk deterioration must not be forced to REQUEST_DATA_VERIFICATION."""

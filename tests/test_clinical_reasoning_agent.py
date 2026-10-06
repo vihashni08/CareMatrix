@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest.mock import Mock
 
 from communication.event_queue import EventQueue
 from communication.events import ClinicalReasoningEvent, DataAnalysisEvent
+from clinical_reasoning_agent.schemas import LLMReasoningResult
 from clinical_reasoning_agent import (
     ClinicalReasoningAgent,
     ClinicalReasoningEngine,
@@ -70,6 +72,35 @@ class ClinicalReasoningAgentTests(unittest.TestCase):
         self.assertGreater(len(result.recommended_actions), 0)
         self.assertTrue(any("bedside" in a.lower() for a in result.recommended_actions))
         self.assertEqual(len(self.queue.get_history("clinical_decisions")), 1)
+
+    def test_high_risk_invokes_available_llm_without_global_enable_flag(self):
+        """High-risk synthesis uses an available Gemini reasoner and still builds a report."""
+        reasoner = Mock()
+        reasoner.is_available = True
+        reasoner.reason.return_value = LLMReasoningResult(
+            clinical_summary="High-risk deterioration requires immediate bedside review.",
+            supporting_evidence=["MAP remains critically low."],
+            conflicting_evidence=[],
+            key_findings=["Hypotension with tachycardia."],
+            risk_interpretation="High-risk vital pattern.",
+            priority="URGENT",
+            recommended_actions=["Request immediate clinician assessment."],
+            confidence=0.95,
+        )
+        agent = ClinicalReasoningAgent(
+            event_queue=self.queue,
+            llm_reasoner=reasoner,
+            enable_llm=False,
+            enable_rag=False,
+        )
+
+        result = agent.process_event(self.make_analysis_event(risk_level="HIGH RISK"))
+
+        reasoner.reason.assert_called_once()
+        self.assertEqual(result.clinical_summary, "High-risk deterioration requires immediate bedside review.")
+        report = result.to_clinical_report()
+        self.assertIn("High-risk deterioration", report["executive_summary"])
+        self.assertEqual(report["clinical_status"]["priority"], "URGENT")
 
     # 2. LOW-Risk Reasoning (Stable Trends)
     def test_low_risk_stable_produces_routine_decision(self):

@@ -20,7 +20,6 @@ from flask_cors import CORS
 
 from carematrix_runtime.patient_stream import PatientScenario
 from carematrix_runtime.runtime import CareMatrixRuntime
-from data.adapters.mimic_adapter import MIMICIVAdapter
 from data.adapters.vitaldb_adapter import VitalDBAdapter
 
 # Suppress noisy werkzeug logs in production/demo mode
@@ -102,6 +101,7 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
             "status": "healthy" if supervisor_snap["all_healthy"] else "degraded",
             "all_healthy": supervisor_snap["all_healthy"],
             "total_agents": supervisor_snap["total_agents"],
+            "risk_model_name": rt.risk_agent.model_name,
             "supervisor": supervisor_snap,
             "runtime_metrics": rt.metrics,
             "active_alert_count": len(active_alerts),
@@ -322,16 +322,14 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
     # ------------------------------------------------------------------------
     @app.route("/api/datasets", methods=["GET"])
     def list_datasets():
-        """List available case IDs from VitalDB and MIMIC adapters.
+        """List available case IDs from the supported VitalDB adapter.
 
         Returns:
-            { "vitaldb": [0, 4, ...], "mimic": [1001, 1002, ...] }
+            { "vitaldb": [0, 4, ...] }
         """
         vitaldb_cases = VitalDBAdapter().list_cases()
-        mimic_cases = MIMICIVAdapter().list_cases()
         return jsonify({
             "vitaldb": vitaldb_cases,
-            "mimic": mimic_cases,
         })
 
     @app.route("/api/patients/dataset", methods=["POST"])
@@ -339,7 +337,7 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
         """Load a real dataset case into the live monitoring pipeline.
 
         Request body (JSON):
-            { "case_id": <int|str>, "adapter": "vitaldb"|"mimic" }
+            { "case_id": <int|str>, "adapter": "vitaldb" }
 
         Returns:
             Same shape as GET /api/patients/<id> (with data_source field).
@@ -348,10 +346,12 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
         data = request.get_json(silent=True) or {}
 
         case_id_raw = data.get("case_id")
-        adapter_name = data.get("adapter", "vitaldb")
+        adapter_name = str(data.get("adapter", "vitaldb")).strip().lower()
 
         if case_id_raw is None:
             return jsonify({"error": "case_id is required"}), 400
+        if adapter_name != "vitaldb":
+            return jsonify({"error": "Unsupported adapter. Valid adapter: vitaldb"}), 400
 
         try:
             case_id = int(case_id_raw)

@@ -108,7 +108,7 @@
       // Research / Demo state
       const [eventStreamLogs, setEventStreamLogs] = useState([]);
       const [patientMemory, setPatientMemory] = useState(null);
-      const [availableDatasets, setAvailableDatasets] = useState({ vitaldb: [], mimic: [] });
+      const [availableDatasets, setAvailableDatasets] = useState({ vitaldb: [] });
       const [selectedAdapter, setSelectedAdapter] = useState('vitaldb');
       const [selectedCaseId, setSelectedCaseId] = useState('');
       const [loadingDataset, setLoadingDataset] = useState(false);
@@ -450,6 +450,9 @@
       const vitals = patientDetail?.latest_vitals || activePatient?.latest_vitals || {};
       const careAction = patientDetail?.latest_care_action;
       const riskDecision = patientDetail?.latest_risk_decision;
+      const riskModelName = riskDecision?.model_name || patientDetail?.risk_model_name ||
+        activePatient?.risk_model_name || systemHealth?.risk_model_name || 'Model loading';
+      const riskModelLabel = riskModelName.replace(/([a-z])([A-Z])/g, '$1 $2');
       const dataAnalysis = patientDetail?.latest_data_analysis;
       const clinicalReasoning = patientDetail?.latest_clinical_reasoning;
       const monitoringEvent = patientDetail?.latest_monitoring_event;
@@ -874,7 +877,7 @@
                       </p>
                     </div>
                     <div className="text-[10px] font-mono text-slate-500 mt-2 border-t border-slate-800 pt-1">
-                      Model: RF Classifier
+                      Model: {riskModelLabel}
                     </div>
                   </div>
 
@@ -998,7 +1001,7 @@
                         </b>
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">
-                        Model: <span className="font-mono text-slate-300">{riskDecision?.model_name || 'RandomForest'}</span>
+                        Model: <span className="font-mono text-slate-300">{riskModelLabel}</span>
                       </div>
                     </div>
                     <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-2 mt-3">
@@ -1791,7 +1794,7 @@
                         <p className="text-xs text-slate-400 mt-0.5">Stream authentic physiological recordings into the multi-agent pipeline</p>
                       </div>
                       <span className="text-[10px] font-mono bg-teal-950 text-teal-400 border border-teal-800 px-2 py-0.5 rounded">
-                        VitalDB & MIMIC-IV
+                        VitalDB
                       </span>
                     </div>
 
@@ -1808,7 +1811,6 @@
                           className="w-full text-xs bg-slate-900 border border-slate-700 text-slate-200 py-2 px-3 rounded-lg"
                         >
                           <option value="vitaldb">VitalDB Surgical ICU Cohort (High-frequency physiological recordings)</option>
-                          <option value="mimic">MIMIC-IV Critical Care Database (Bedside intensive care observations)</option>
                         </select>
                       </div>
 

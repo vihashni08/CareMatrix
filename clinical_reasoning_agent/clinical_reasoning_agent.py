@@ -209,7 +209,8 @@ class ClinicalReasoningAgent:
             else:
                 prompt_diff = 0
 
-            if self.enable_llm and self.llm_reasoner.is_available:
+            should_invoke_llm = self.enable_llm or high_risk
+            if should_invoke_llm and self.llm_reasoner.is_available:
                 try:
                     if self.verbose:
                         print(_format_log(self.name, "LLM_INVOKE", f"Invoking Gemini reasoner for {event_id}"))
