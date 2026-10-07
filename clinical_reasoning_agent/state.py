@@ -20,6 +20,8 @@ class ClinicalReasoningState:
     total_evaluations: int = 0
     last_priority: str | None = None
     last_evaluated_timestamp: float | None = None
+    latest_tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    last_agentic_mode: str = "DETERMINISTIC"
 
     def record_assessment(
         self,

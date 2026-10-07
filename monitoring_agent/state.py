@@ -76,6 +76,9 @@ class PatientMonitoringState:
         self.latest_candidate_alert: bool = False
         self.latest_persistent_alert: bool = False
         self.latest_decision: str = "CONTINUE_MONITORING"
+        # Bounded agentic tool execution trace for current cycle
+        self.latest_tool_trace: list[dict[str, Any]] = []
+        self.last_agentic_mode: str = "DETERMINISTIC"
 
     def buffer_dataframe(self) -> pd.DataFrame:
         """Return the recent observations buffer as a pandas DataFrame."""

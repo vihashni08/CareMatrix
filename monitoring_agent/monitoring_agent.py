@@ -65,6 +65,7 @@ class MonitoringAgent:
         verbose: bool = False,
         enable_llm: bool = False,
         llm_reasoner: Any | None = None,
+        max_tool_iterations: int = 5,
     ):
         self.name = name
         self.case_id = int(case_id)
@@ -76,6 +77,7 @@ class MonitoringAgent:
         self.verbose = verbose
         self.enable_llm = enable_llm
         self.llm_reasoner = llm_reasoner
+        self.max_tool_iterations = max_tool_iterations
 
 
         # Lifecycle & state tracking
@@ -88,15 +90,9 @@ class MonitoringAgent:
             recovery_duration_seconds=self.recovery_duration,
         )
 
-        # Analysis tools used by agent
-        self.tools = {
-            "preprocess": preprocess_data,
-            "calculate_baseline": calculate_baseline,
-            "calculate_deviation": calculate_deviation,
-            "calculate_trends": calculate_trends,
-            "assess_signal_quality": assess_signal_quality,
-            "invalid_measurement_mask": invalid_measurement_mask,
-        }
+        # Standardized agent tools registry (transparently supports dict access and Tool execution)
+        from carematrix_runtime.tools.monitoring_tools import create_monitoring_tools
+        self.tools = create_monitoring_tools(baseline_window=self.baseline_window)
 
         self.last_decision: MonitoringDecision = MonitoringDecision.CONTINUE_MONITORING
         self.last_event: MonitoringEvent | None = None
@@ -227,21 +223,39 @@ class MonitoringAgent:
         if self.verbose:
             print(_format_log(self.name, "OBSERVE", f"patient={pid} sample={target_state.total_observations} (t={target_state.latest_timestamp})"))
 
-        # 2. ANALYZE (Invoke tool capabilities on progressive observation buffer)
-        raw_df = target_state.buffer_dataframe()
-        signal_quality_df = self.tools["assess_signal_quality"](raw_df)
-        invalid_mask_df = self.tools["invalid_measurement_mask"](raw_df)
+        # 2. ANALYZE (Genuine, bounded LLM tool-selection loop if LLM enabled; else deterministic)
+        tool_trace: list[dict[str, Any]] = []
+        agentic_mode = "DETERMINISTIC"
+        llm_proposal = None
+        fallback_err = None
 
-        try:
-            cleaned_df = self.tools["preprocess"](raw_df)
-            baseline_df = self.tools["calculate_baseline"](cleaned_df, window=self.baseline_window)
-            deviation_df = self.tools["calculate_deviation"](cleaned_df, baseline_df)
-            trends_df = self.tools["calculate_trends"](cleaned_df)
-        except Exception:
-            cleaned_df = raw_df.copy()
-            baseline_df = pd.DataFrame(np.nan, index=raw_df.index, columns=VITAL_COLUMNS)
-            deviation_df = pd.DataFrame(np.nan, index=raw_df.index, columns=VITAL_COLUMNS)
-            trends_df = pd.DataFrame("insufficient_data", index=raw_df.index, columns=VITAL_COLUMNS)
+        if self.enable_llm:
+            try:
+                (
+                    cleaned_df,
+                    baseline_df,
+                    deviation_df,
+                    trends_df,
+                    signal_quality_df,
+                    invalid_mask_df,
+                    tool_trace,
+                    llm_proposal,
+                ) = self._run_agentic_tool_loop(
+                    target_state=target_state,
+                    latest_sample=sample_dict,
+                )
+                agentic_mode = "LLM_AGENTIC_TOOLS"
+            except Exception as exc:
+                fallback_err = str(exc)
+                agentic_mode = "LLM_FALLBACK_DETERMINISTIC"
+                if self.verbose:
+                    print(_format_log(self.name, "LLM_LOOP_FALLBACK", f"Tool loop failed: {exc}. Executing deterministic fallback."))
+                cleaned_df, baseline_df, deviation_df, trends_df, signal_quality_df, invalid_mask_df = self._run_deterministic_pipeline(target_state)
+        else:
+            cleaned_df, baseline_df, deviation_df, trends_df, signal_quality_df, invalid_mask_df = self._run_deterministic_pipeline(target_state)
+
+        target_state.latest_tool_trace = tool_trace
+        target_state.last_agentic_mode = agentic_mode
 
         latest_clean = {v: float(cleaned_df[v].iloc[-1]) if pd.notna(cleaned_df[v].iloc[-1]) else np.nan for v in VITAL_COLUMNS}
         latest_base = {v: float(baseline_df[v].iloc[-1]) if pd.notna(baseline_df[v].iloc[-1]) else np.nan for v in VITAL_COLUMNS}
@@ -261,17 +275,18 @@ class MonitoringAgent:
             invalid_mask=latest_inv,
         )
 
-        # 3b. LLM PROPOSAL & SAFETY ARBITRATION (if enabled)
+        # 3b. SAFETY ARBITRATION (Deterministic safety layer arbitrates final decision)
         if self.enable_llm:
-            llm_proposal = None
-            fallback_err = None
-            try:
-                if self.llm_reasoner is None:
-                    from monitoring_agent.monitoring_llm_reasoner import GeminiMonitoringReasoner
-                    self.llm_reasoner = GeminiMonitoringReasoner()
-                llm_proposal = self.llm_reasoner.propose(context)
-            except Exception as exc:
-                fallback_err = str(exc)
+            # If agentic tool loop did not produce proposal or ran into error, attempt propose or record fallback
+            if llm_proposal is None and not fallback_err:
+                try:
+                    if self.llm_reasoner is None:
+                        from monitoring_agent.monitoring_llm_reasoner import GeminiMonitoringReasoner
+                        self.llm_reasoner = GeminiMonitoringReasoner()
+                    if hasattr(self.llm_reasoner, "propose"):
+                        llm_proposal = self.llm_reasoner.propose(context)
+                except Exception as exc:
+                    fallback_err = str(exc)
 
             decision, event, context = target_engine.arbitrate(
                 decision=decision,
@@ -287,6 +302,9 @@ class MonitoringAgent:
             meta["stage_latency_ms"] = stage_latency_ms
             meta["monitoring_latency_ms"] = stage_latency_ms
             meta["cumulative_latency_ms"] = stage_latency_ms
+            if tool_trace:
+                meta["tool_trace"] = tool_trace
+            meta["agentic_mode"] = agentic_mode
             event.metadata = meta
 
         if pid == self.case_id:
@@ -322,6 +340,202 @@ class MonitoringAgent:
                 self.event_queue.publish("all_events", event)
 
         return decision, event
+
+    def _run_deterministic_pipeline(
+        self,
+        target_state: PatientMonitoringState,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Execute the standard deterministic analytical pipeline using registered tools."""
+        df_raw = target_state.buffer_dataframe()
+
+        # Assess signal quality & invalid mask
+        sq_tool = self.tools.get("assess_signal_quality")
+        inv_tool = self.tools.get("invalid_measurement_mask")
+        signal_quality_df = sq_tool(df_raw) if sq_tool else assess_signal_quality(df_raw)
+        invalid_mask_df = inv_tool(df_raw) if inv_tool else invalid_measurement_mask(df_raw)
+
+        # Preprocessing, baseline, deviation, trends with defensive fallback for small buffer sizes
+        try:
+            prep_tool = self.tools.get("preprocess")
+            cleaned_df = prep_tool(df_raw) if prep_tool else preprocess_data(df_raw)
+
+            base_tool = self.tools.get("calculate_baseline")
+            baseline_df = base_tool(cleaned_df, window=self.baseline_window) if base_tool else calculate_baseline(cleaned_df, window=self.baseline_window)
+
+            dev_tool = self.tools.get("calculate_deviation")
+            deviation_df = dev_tool(cleaned_df, baseline_df) if dev_tool else calculate_deviation(cleaned_df, baseline_df)
+
+            trend_tool = self.tools.get("calculate_trends")
+            trends_df = trend_tool(cleaned_df) if trend_tool else calculate_trends(cleaned_df)
+        except Exception:
+            cleaned_df = df_raw.copy()
+            baseline_df = pd.DataFrame(np.nan, index=df_raw.index, columns=VITAL_COLUMNS)
+            deviation_df = pd.DataFrame(np.nan, index=df_raw.index, columns=VITAL_COLUMNS)
+            trends_df = pd.DataFrame("insufficient_data", index=df_raw.index, columns=VITAL_COLUMNS)
+
+        return cleaned_df, baseline_df, deviation_df, trends_df, signal_quality_df, invalid_mask_df
+
+    def _run_agentic_tool_loop(
+        self,
+        target_state: PatientMonitoringState,
+        latest_sample: dict[str, Any],
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, list[dict[str, Any]], Any]:
+        """Execute genuine bounded LLM tool-selection loop.
+
+        Gemini determines which analytical tool to run next based on observation and current state.
+        Executes chosen tool, records step trace, passes result back to agent state, and iterates
+        until 'finish' decision or max_tool_iterations is reached.
+        """
+        if self.llm_reasoner is None:
+            from monitoring_agent.monitoring_llm_reasoner import GeminiMonitoringReasoner
+            self.llm_reasoner = GeminiMonitoringReasoner()
+
+        raw_df = target_state.buffer_dataframe()
+        cleaned_df: pd.DataFrame | None = None
+        baseline_df: pd.DataFrame | None = None
+        deviation_df: pd.DataFrame | None = None
+        trends_df: pd.DataFrame | None = None
+        signal_quality_df: pd.DataFrame | None = None
+        invalid_mask_df: pd.DataFrame | None = None
+
+        executed_tools: list[str] = []
+        tool_trace: list[dict[str, Any]] = []
+        final_proposal = None
+
+        for iteration in range(self.max_tool_iterations):
+            state_summary = {
+                "has_clean_values": cleaned_df is not None,
+                "baseline_established": baseline_df is not None,
+                "deviations_calculated": deviation_df is not None,
+                "trends_calculated": trends_df is not None,
+                "signal_quality_assessed": signal_quality_df is not None,
+                "vitals_glance": {
+                    v: float(latest_sample.get(v, np.nan))
+                    for v in VITAL_COLUMNS
+                    if v in latest_sample and pd.notna(latest_sample.get(v))
+                },
+            }
+
+            # Gemini selects next analytical tool or decides to finish
+            decision = self.llm_reasoner.select_tool(
+                patient_id=target_state.case_id,
+                observations_count=target_state.total_observations,
+                latest_observation=latest_sample,
+                executed_tools=executed_tools,
+                state_summary=state_summary,
+                iteration=iteration,
+                max_iterations=self.max_tool_iterations,
+            )
+
+            # Record thought & chosen action
+            step_record: dict[str, Any] = {
+                "iteration": iteration + 1,
+                "thought": decision.thought,
+                "action": decision.action,
+                "tool_name": decision.tool_name,
+                "tool_args": decision.tool_args,
+            }
+
+            if decision.action == "finish":
+                step_record["status"] = "finished"
+                tool_trace.append(step_record)
+                if decision.classification and decision.rationale:
+                    from monitoring_agent.monitoring_llm_reasoner import MonitoringLLMProposal
+                    final_proposal = MonitoringLLMProposal(
+                        classification=decision.classification,
+                        rationale=decision.rationale,
+                        confidence=decision.confidence,
+                        recommended_action=decision.final_decision or "CONTINUE_MONITORING",
+                        raw_response=decision.raw_response,
+                    )
+                break
+
+            tool_name = (decision.tool_name or "").strip()
+            if not tool_name or tool_name not in self.tools:
+                step_record["status"] = "error"
+                step_record["error"] = f"Unknown tool: '{tool_name}'"
+                tool_trace.append(step_record)
+                break
+
+            # Execute selected tool
+            try:
+                if tool_name == "assess_signal_quality":
+                    window = decision.tool_args.get("window", 10) if isinstance(decision.tool_args, dict) else 10
+                    signal_quality_df = self.tools[tool_name](df=raw_df, window=window)
+                    output_summary = {v: str(signal_quality_df[v].iloc[-1]) for v in VITAL_COLUMNS if v in signal_quality_df}
+                elif tool_name == "invalid_measurement_mask":
+                    invalid_mask_df = self.tools[tool_name](df=raw_df)
+                    output_summary = {v: bool(invalid_mask_df[v].iloc[-1]) for v in VITAL_COLUMNS if v in invalid_mask_df}
+                elif tool_name == "preprocess":
+                    cleaned_df = self.tools[tool_name](df=raw_df)
+                    output_summary = {v: float(cleaned_df[v].iloc[-1]) for v in VITAL_COLUMNS if v in cleaned_df and pd.notna(cleaned_df[v].iloc[-1])}
+                elif tool_name == "calculate_baseline":
+                    input_df = cleaned_df if cleaned_df is not None else raw_df
+                    baseline_df = self.tools[tool_name](df=input_df, window=self.baseline_window)
+                    output_summary = {v: float(baseline_df[v].iloc[-1]) for v in VITAL_COLUMNS if v in baseline_df and pd.notna(baseline_df[v].iloc[-1])}
+                elif tool_name == "calculate_deviation":
+                    input_df = cleaned_df if cleaned_df is not None else raw_df
+                    base_df = baseline_df if baseline_df is not None else (self.tools["calculate_baseline"](input_df, window=self.baseline_window))
+                    baseline_df = base_df
+                    deviation_df = self.tools[tool_name](df=input_df, baseline=base_df)
+                    output_summary = {v: float(deviation_df[v].iloc[-1]) for v in VITAL_COLUMNS if v in deviation_df and pd.notna(deviation_df[v].iloc[-1])}
+                elif tool_name == "calculate_trends":
+                    input_df = cleaned_df if cleaned_df is not None else raw_df
+                    trends_df = self.tools[tool_name](df=input_df)
+                    output_summary = {v: str(trends_df[v].iloc[-1]) for v in VITAL_COLUMNS if v in trends_df}
+                else:
+                    output_summary = "Tool executed successfully"
+
+                step_record["status"] = "success"
+                step_record["output"] = output_summary
+                executed_tools.append(tool_name)
+            except Exception as err:
+                step_record["status"] = "error"
+                step_record["error"] = str(err)
+                tool_trace.append(step_record)
+                break
+
+            tool_trace.append(step_record)
+
+        # Fallback completion: Ensure any analytical steps not invoked by LLM are populated deterministically
+        # to guarantee the decision engine receives complete and valid data structures.
+        try:
+            if cleaned_df is None:
+                prep_tool = self.tools.get("preprocess")
+                cleaned_df = prep_tool(raw_df) if prep_tool else preprocess_data(raw_df)
+            if baseline_df is None:
+                base_tool = self.tools.get("calculate_baseline")
+                baseline_df = base_tool(cleaned_df, window=self.baseline_window) if base_tool else calculate_baseline(cleaned_df, window=self.baseline_window)
+            if deviation_df is None:
+                dev_tool = self.tools.get("calculate_deviation")
+                deviation_df = dev_tool(cleaned_df, baseline_df) if dev_tool else calculate_deviation(cleaned_df, baseline_df)
+            if trends_df is None:
+                tr_tool = self.tools.get("calculate_trends")
+                trends_df = tr_tool(cleaned_df) if tr_tool else calculate_trends(cleaned_df)
+        except Exception:
+            if cleaned_df is None:
+                cleaned_df = raw_df.copy()
+            if baseline_df is None:
+                baseline_df = pd.DataFrame(np.nan, index=raw_df.index, columns=VITAL_COLUMNS)
+            if deviation_df is None:
+                deviation_df = pd.DataFrame(np.nan, index=raw_df.index, columns=VITAL_COLUMNS)
+            if trends_df is None:
+                trends_df = pd.DataFrame("insufficient_data", index=raw_df.index, columns=VITAL_COLUMNS)
+
+        try:
+            if signal_quality_df is None:
+                sq_tool = self.tools.get("assess_signal_quality")
+                signal_quality_df = sq_tool(raw_df) if sq_tool else assess_signal_quality(raw_df)
+            if invalid_mask_df is None:
+                inv_tool = self.tools.get("invalid_measurement_mask")
+                invalid_mask_df = inv_tool(raw_df) if inv_tool else invalid_measurement_mask(raw_df)
+        except Exception:
+            if signal_quality_df is None:
+                signal_quality_df = pd.DataFrame("good", index=raw_df.index, columns=VITAL_COLUMNS)
+            if invalid_mask_df is None:
+                invalid_mask_df = pd.DataFrame(False, index=raw_df.index, columns=VITAL_COLUMNS)
+
+        return cleaned_df, baseline_df, deviation_df, trends_df, signal_quality_df, invalid_mask_df, tool_trace, final_proposal
 
     observe = step
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
+import time
 import webbrowser
 
 from carematrix_runtime.runtime import CareMatrixRuntime
@@ -88,10 +90,13 @@ def main():
     print("\nPress Ctrl+C to safely terminate the runtime and agents.\n")
 
     if args.open_browser:
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
+        def _open_when_ready():
+            time.sleep(1.5)
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        threading.Thread(target=_open_when_ready, daemon=True).start()
 
     runtime = CareMatrixRuntime(
         stream_interval_seconds=args.interval,

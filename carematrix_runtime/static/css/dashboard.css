@@ -1,0 +1,112 @@
+/* ==========================================================================
+   CareMatrix Global Healthcare Design System & Clinical Stylesheet
+   ========================================================================== */
+
+:root {
+  /* Core Clinical Palette */
+  --cm-navy-950: #0a0f1d;
+  --cm-navy-900: #0f172a;
+  --cm-navy-800: #1e293b;
+  --cm-navy-700: #334155;
+  --cm-slate-600: #475569;
+  --cm-slate-500: #64748b;
+  --cm-slate-400: #94a3b8;
+  --cm-slate-300: #cbd5e1;
+  --cm-slate-200: #e2e8f0;
+  --cm-slate-100: #f1f5f9;
+  --cm-slate-50:  #f8fafc;
+  --cm-white:     #ffffff;
+
+  /* Clinical Status Colors */
+  --cm-critical:  #dc2626; /* Red 600 */
+  --cm-critical-bg: #fef2f2;
+  --cm-critical-border: #fecaca;
+  --cm-warning:   #d97706; /* Amber 600 */
+  --cm-warning-bg: #fffbeb;
+  --cm-warning-border: #fde68a;
+  --cm-stable:    #0d9488; /* Teal 600 */
+  --cm-stable-bg:  #f0fdfa;
+  --cm-stable-border: #99f6e4;
+  --cm-info:      #2563eb; /* Blue 600 */
+  --cm-info-bg:    #eff6ff;
+  --cm-info-border: #bfdbfe;
+
+  /* Typography & Geometry */
+  --cm-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --cm-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --cm-radius-sm: 4px;
+  --cm-radius-md: 6px;
+  --cm-radius-lg: 8px;
+  --cm-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --cm-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+body {
+  font-family: var(--cm-font-sans);
+  color: var(--cm-navy-900);
+  background-color: var(--cm-slate-100);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle, dignified pulse for critical telemetry alarms (never distracting) */
+@keyframes cm-subtle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.pulse-alert {
+  animation: cm-subtle-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Professional clinical scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--cm-slate-100);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--cm-slate-300);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cm-slate-400);
+}
+
+/* Clinical structured document paper effect */
+.clinical-document {
+  background: var(--cm-white);
+  border: 1px solid var(--cm-slate-200);
+  box-shadow: var(--cm-shadow-sm);
+}
+
+/* Clinical table styles */
+.clinical-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+.clinical-table th {
+  background-color: var(--cm-slate-50);
+  color: var(--cm-slate-600);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.6875rem;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--cm-slate-200);
+  text-align: left;
+}
+.clinical-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--cm-slate-100);
+  color: var(--cm-navy-900);
+}
+.clinical-table tr:last-child td {
+  border-bottom: none;
+}
+.clinical-table tr:hover td {
+  background-color: #fafbfc;
+}

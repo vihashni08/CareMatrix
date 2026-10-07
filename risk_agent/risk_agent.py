@@ -73,6 +73,10 @@ class RiskAgent:
         self.risk_threshold = self.model_tool.risk_threshold
         self.model_name = self.model_tool.model_name
 
+        # Standardized agent tools registry
+        from carematrix_runtime.tools.risk_tools import create_risk_tools
+        self.tools = create_risk_tools(model_tool=self.model_tool)
+
         # Internal state & decision engine
         self.state = RiskAgentState()
         self.decision_engine = RiskDecisionEngine(

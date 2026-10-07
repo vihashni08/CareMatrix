@@ -113,15 +113,12 @@ class GeminiRiskReasoner(BaseGeminiReasoner):
     def __init__(
         self,
         api_key: str | None = None,
-        model_name: str = "gemini-2.5-flash",
-        temperature: float = 0.1,
+        model_name: str | None = None,
         timeout: float = 8.0,
     ):
         super().__init__(
             api_key=api_key,
             model_name=model_name,
-            system_instruction=RISK_SYSTEM_INSTRUCTION,
-            temperature=temperature,
             timeout=timeout,
         )
 
@@ -142,7 +139,7 @@ class GeminiRiskReasoner(BaseGeminiReasoner):
             conflict_flags=conflict_flags,
         )
 
-        raw_text = self.generate_text(prompt)
+        raw_text = self.call_gemini(prompt, system_instruction=RISK_SYSTEM_INSTRUCTION)
         cleaned = clean_json_text(raw_text)
 
         try:
@@ -203,7 +200,7 @@ Return strictly a JSON object:
   "rationale": "1-2 sentence clinical explanation.",
   "confidence": 0.0 to 1.0
 }}"""
-        raw_text = self.generate_text(prompt)
+        raw_text = self.call_gemini(prompt, system_instruction=RISK_SYSTEM_INSTRUCTION)
         cleaned = clean_json_text(raw_text)
 
         try:

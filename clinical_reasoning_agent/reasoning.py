@@ -539,7 +539,13 @@ class ClinicalReasoningEngine:
             final_key_findings = (
                 list(llm_result.key_findings) if llm_result.key_findings else list(deterministic.key_findings)
             )
-            final_findings = final_key_findings or list(deterministic.findings)
+            final_findings = list(final_key_findings)
+            for df in deterministic.findings:
+                if df not in final_findings:
+                    if any(marker in df.lower() for marker in ("historical context", "active alerts", "supporting evidence", "conflicting evidence")):
+                        final_findings.append(df)
+            if not final_findings:
+                final_findings = list(deterministic.findings)
             final_phys = (
                 getattr(llm_result, "physiological_analysis", []) or deterministic.physiological_analysis
             )

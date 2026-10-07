@@ -5,6 +5,7 @@ from carematrix_runtime.patient_stream import PatientProfile, PatientScenario, P
 from carematrix_runtime.replay_stream import PatientStreamReplayer
 from carematrix_runtime.runtime import CareMatrixRuntime
 from carematrix_runtime.state_manager import PatientStateManager, PatientStateRecord
+from carematrix_runtime.tools import Tool, ToolRegistry, ToolResult
 
 __all__ = [
     "AlertLifecycleState",
@@ -17,4 +18,8 @@ __all__ = [
     "PatientStateRecord",
     "PatientStreamSimulator",
     "PatientStreamReplayer",
+    "Tool",
+    "ToolRegistry",
+    "ToolResult",
 ]
+

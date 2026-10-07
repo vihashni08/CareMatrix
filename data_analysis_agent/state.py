@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -14,6 +15,8 @@ class PatientAnalysisState:
     previous_data_quality_flag: bool | None = None
     previous_patterns: list[str] = field(default_factory=list)
     analysed_events: int = 0
+    latest_tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    last_agentic_mode: str = "DETERMINISTIC"
 
 
 __all__ = ["PatientAnalysisState"]

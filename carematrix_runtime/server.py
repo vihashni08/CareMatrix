@@ -55,23 +55,63 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
                 except queue.Full:
                     pass
 
+    def _sanitize_event_for_sse(data: Any) -> Any:
+        """Sanitize event data prior to SSE broadcast.
+        
+        Preserves all structured metadata (agentic_mode, tool names, tool args,
+        status, rationale, negotiation trace, fallback errors, latencies, etc.)
+        while stripping raw internal LLM monologue/thought fields to prevent
+        unfiltered chain-of-thought leaks to clients.
+        """
+        if isinstance(data, dict):
+            sanitized = {}
+            for k, v in data.items():
+                if k == "tool_trace" and isinstance(v, list):
+                    clean_trace = []
+                    for step in v:
+                        if isinstance(step, dict):
+                            clean_step = {sk: sv for sk, sv in step.items() if sk != "thought"}
+                            clean_trace.append(clean_step)
+                        else:
+                            clean_trace.append(step)
+                    sanitized[k] = clean_trace
+                elif k == "thought":
+                    # Omit raw LLM chain-of-thought string
+                    continue
+                else:
+                    sanitized[k] = _sanitize_event_for_sse(v)
+            return sanitized
+        elif isinstance(data, list):
+            return [_sanitize_event_for_sse(item) for item in data]
+        return data
+
     def _runtime_event_listener(topic: str, event: Any) -> None:
-        """Listener passed to runtime to broadcast events."""
-        event_dict = event if isinstance(event, dict) else (event.to_dict() if hasattr(event, "to_dict") else str(event))
+        """Listener passed to runtime to broadcast events to SSE subscribers."""
+        raw_dict = event if isinstance(event, dict) else (event.to_dict() if hasattr(event, "to_dict") else str(event))
+        event_dict = _sanitize_event_for_sse(raw_dict) if isinstance(raw_dict, dict) else raw_dict
+
         if topic == "observation":
             _broadcast_sse("vital_tick", event_dict)
-        elif topic == "monitoring_alerts":
+        elif topic in ("monitoring_events", "monitoring_alerts"):
             _broadcast_sse("monitoring_alert", event_dict)
-        elif topic == "risk_predictions":
+        elif topic in ("risk_decisions", "risk_predictions"):
             _broadcast_sse("risk_prediction", event_dict)
-        elif topic == "data_analysis_inputs" or topic == "analytical_evidence":
+        elif topic == "risk_challenges":
+            _broadcast_sse("agent_negotiation", event_dict)
+        elif topic in ("data_analysis_events", "data_analysis_inputs", "analytical_evidence"):
             _broadcast_sse("data_analysis", event_dict)
-        elif topic == "clinical_decisions":
+        elif topic in ("clinical_decisions", "clinical_reasoning_outputs"):
             _broadcast_sse("clinical_reasoning", event_dict)
-        elif topic == "care_coordination_events":
+        elif topic in ("care_coordination_events", "care_actions"):
             _broadcast_sse("care_coordination", event_dict)
         elif topic == "heartbeats":
             _broadcast_sse("heartbeat", event_dict)
+        elif topic == "agent_failures":
+            _broadcast_sse("agent_failure", event_dict)
+        elif topic == "agent_recoveries":
+            _broadcast_sse("agent_recovery", event_dict)
+        elif topic == "clinician_feedback":
+            _broadcast_sse("clinician_feedback", event_dict)
 
     runtime.add_live_listener(_runtime_event_listener)
 
@@ -103,6 +143,8 @@ def create_app(runtime: CareMatrixRuntime | None = None) -> Flask:
             "total_agents": supervisor_snap["total_agents"],
             "risk_model_name": rt.risk_agent.model_name,
             "supervisor": supervisor_snap,
+            "agents": supervisor_snap.get("agents", {}),
+            "failure_log": getattr(rt.supervisor, "failure_log", []),
             "runtime_metrics": rt.metrics,
             "active_alert_count": len(active_alerts),
             "timestamp": time.time(),

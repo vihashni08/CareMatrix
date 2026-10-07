@@ -165,48 +165,66 @@ python3 run_evaluation.py
 
 ---
 
+---
+
 ## 5. How to Run
 
-### 1. Launch Continuous Live Prototype & Clinician Dashboard
+### 1. Launch Continuous Live Runtime & Clinician Dashboard
+The authoritative startup command to run the complete CareMatrix runtime, all 5 agents, supervisor, real-time SSE streaming, and the modern clinician dashboard:
+
 ```bash
-python3 run_live_prototype.py --port 5050 --open-browser
+.venv/bin/python carematrix_runtime/server.py
+```
+Or with custom port and streaming tick interval:
+```bash
+.venv/bin/python carematrix_runtime/server.py --port 5050 --interval 1.0
 ```
 Open **http://localhost:5050/** in your browser.
 
-### 2. Run Autonomous Research Evaluation Suite
+To launch with real VitalDB test-split patient beds pre-loaded:
 ```bash
-python3 run_evaluation.py
+.venv/bin/python run_live_prototype.py --port 5050 --open-browser --cases 242,532,1271
 ```
 
-### 3. Run Terminal Multi-Agent Demonstration (VitalDB Dataset Cases)
+### 2. Run Test Suite
+Run the full automated test suite across all 5 agents, tool abstraction, FIPA negotiation, RAG, safety arbitration, SSE, and dashboard data fidelity:
+```bash
+.venv/bin/pytest -v
+```
+
+### 3. Run Autonomous Research Evaluation Suite
+```bash
+.venv/bin/python run_evaluation.py
+```
+
+### 4. Run Terminal Multi-Agent Demonstration (VitalDB Dataset Cases)
 Run the full 5-agent pipeline demonstration on synthetic Case 0 or real VitalDB Case 4:
 ```bash
 # Synthetic test case
-python3 run_carematrix.py --case-id 0 --samples 100 --delay 0 --agent-demo
+.venv/bin/python run_carematrix.py --case-id 0 --samples 100 --delay 0 --agent-demo
 
 # VitalDB Case 4 (Perioperative patient dataset)
-python3 run_carematrix.py --case-id 4 --samples 100 --start-sample 800 --delay 0 --agent-demo
-```
-
-### 4. Run Test Suite
-Run the complete unit, alert lifecycle, server API, multi-patient isolation, and supervisor recovery test suite:
-```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python run_carematrix.py --case-id 4 --samples 100 --start-sample 800 --delay 0 --agent-demo
 ```
 
 ---
 
-## 5. Environment Variables (Optional Gemini LLM Integration)
+## 6. Model Configuration & Environment Variables
 
-CareMatrix includes deterministic fallback rules for all agents and operates without an internet connection or external API keys.
+CareMatrix is designed with transparent deterministic fallbacks across all agents and runs completely offline out-of-the-box.
 
-To enable **Google Gemini 2.5 Flash** for clinical reasoning synthesis:
+When LLM reasoning is enabled, CareMatrix utilizes the Google GenAI SDK with the default model:
+- **Default Model**: `gemini-flash-lite-latest` (configurable via `GEMINI_MODEL`)
+- **Resilient Fallback Pool**: `[gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-flash-latest]`
+
+To enable Gemini tool selection:
 ```bash
 export GEMINI_API_KEY="your-gemini-api-key-here"
+export GEMINI_MODEL="gemini-flash-lite-latest"
 ```
 Or create a `.env` file in the root directory:
 ```bash
-echo 'GEMINI_API_KEY="your-gemini-api-key-here"' > .env
+echo 'GEMINI_API_KEY="your-gemini-api-key-here"' >> .env
 ```
-# CareMatrix---FYP
-# CareMatrix-FYP
+
+*Note: CareMatrix is an academic research prototype and clinical decision-support demonstration. It is not approved for unsupervised real patient diagnosis or clinical intervention.*

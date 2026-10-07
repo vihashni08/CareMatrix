@@ -77,10 +77,11 @@ class MonitoringDecisionEngine:
                     vital_sev = "severe"
                     absolute_alert_vitals.append(vital)
 
-            if vital_sev == "normal" and baseline_ready and not is_invalid and pd.notna(dev):
+            if baseline_ready and not is_invalid and pd.notna(dev):
                 for s_level in reversed(SEVERITY_LEVELS):  # critical down to mild
                     if dev >= base_thresh * SEVERITY_MULTIPLIERS[s_level]:
-                        vital_sev = s_level
+                        if _SEVERITY_NUM.get(s_level, 0) > _SEVERITY_NUM.get(vital_sev, 0):
+                            vital_sev = s_level
                         break
 
             vital_severity[vital] = vital_sev

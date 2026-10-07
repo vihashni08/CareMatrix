@@ -6,10 +6,11 @@ explainable clinical decision support outputs using the Gemini API.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 
 from clinical_reasoning_agent.prompt_builder import (
@@ -437,13 +438,176 @@ class GeminiClinicalReasoner(BaseGeminiReasoner):
             escalation_rationale=escalation_rationale,
         )
 
+    def select_tool(
+        self,
+        case_id: int,
+        event_id: str,
+        risk_level: str,
+        affected_vitals: list[str],
+        executed_tools: list[str],
+        state_summary: dict[str, Any],
+        iteration: int,
+        max_iterations: int = 5,
+    ) -> ClinicalReasoningToolDecision:
+        """Ask Gemini which clinical reasoning tool to execute next or whether information is sufficient."""
+        prompt = build_clinical_tool_selection_prompt(
+            case_id=case_id,
+            event_id=event_id,
+            risk_level=risk_level,
+            affected_vitals=affected_vitals,
+            executed_tools=executed_tools,
+            state_summary=state_summary,
+            iteration=iteration,
+            max_iterations=max_iterations,
+        )
+
+        raw_text = self.call_gemini(
+            prompt=prompt,
+            system_instruction=CLINICAL_TOOL_SYSTEM_INSTRUCTION,
+        )
+        return self.validate_and_parse_tool_selection(raw_text)
+
+    def validate_and_parse_tool_selection(self, raw_text: str) -> ClinicalReasoningToolDecision:
+        """Validate and parse Gemini response into ClinicalReasoningToolDecision."""
+        cleaned = _clean_json_text(raw_text)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise LLMSchemaValidationError(f"Malformed JSON in Gemini clinical tool selection response: {exc}") from exc
+
+        if not isinstance(payload, dict):
+            raise LLMSchemaValidationError("Expected JSON object at root of Gemini tool selection response.")
+
+        # If model returned a full clinical reasoning report directly (e.g. from an existing test or prompt),
+        # accept it as an immediate finish decision
+        if "clinical_summary" in payload or "executive_summary" in payload:
+            thought = str(payload.get("clinical_summary", payload.get("thought", ""))).strip()
+            return ClinicalReasoningToolDecision(
+                thought=thought,
+                action="finish",
+                tool_name=None,
+                tool_args={},
+                rationale="Clinical assessment complete.",
+                confidence=float(payload.get("confidence", 1.0)),
+                raw_response=raw_text,
+            )
+
+        thought = str(payload.get("thought", "")).strip()
+        action = str(payload.get("action", "finish")).strip().lower()
+        if action not in ("tool", "finish"):
+            action = "finish"
+
+        tool_name = payload.get("tool_name")
+        if tool_name:
+            tool_name = str(tool_name).strip()
+        tool_args = payload.get("tool_args", {})
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+
+        rationale = str(payload.get("rationale", "")).strip()
+        try:
+            confidence = float(payload.get("confidence", 1.0))
+            if not (0.0 <= confidence <= 1.0):
+                confidence = 1.0
+        except (TypeError, ValueError):
+            confidence = 1.0
+
+        return ClinicalReasoningToolDecision(
+            thought=thought,
+            action=action,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            rationale=rationale,
+            confidence=confidence,
+            raw_response=raw_text,
+        )
+
+
+CLINICAL_TOOL_SYSTEM_INSTRUCTION = """You are an autonomous Clinical Reasoning Agent for CareMatrix.
+Your goal is to inspect incoming patient analytical evidence, identify what clinical knowledge, patient history, or evidence synthesis is required, and decide which clinical tools to invoke.
+
+Available Tools:
+- get_patient_context: Retrieve historical episodic memory and past clinician feedback (acknowledgments, resolutions, overrides) for the patient.
+- build_focused_medical_query: Construct a de-identified clinical query focusing on vital trends, risk status, and patterns for literature search.
+- retrieve_medical_evidence: Retrieve authoritative evidence-based medical literature passages from PubMed and local curated knowledge store using RAG.
+- evaluate_clinical_evidence: Synthesize risk score, vital trends, patterns, and data quality into explainable non-diagnostic clinical recommendations.
+- arbitrate_clinical_reasoning: Arbitrate between deterministic safety baseline and LLM proposal ensuring strict safety invariants cannot be downgraded.
+
+You must select EXACTLY ONE tool to run next, OR decide that sufficient information has been gathered to reason and finish ("finish").
+DO NOT repeatedly call the same tool unless necessary.
+
+You must respond ONLY with a valid JSON object matching this schema:
+{
+  "thought": "Clinical reasoning explaining what clinical information is needed next and why",
+  "action": "tool" | "finish",
+  "tool_name": "get_patient_context" | "build_focused_medical_query" | "retrieve_medical_evidence" | "evaluate_clinical_evidence" | "arbitrate_clinical_reasoning" | null,
+  "tool_args": {},
+  "rationale": "Summary rationale explaining clinical findings or readiness to finish",
+  "confidence": 0.0 to 1.0
+}
+"""
+
+
+@dataclass
+class ClinicalReasoningToolDecision:
+    """Structured decision returned by Gemini in the clinical reasoning tool-selection loop."""
+
+    thought: str
+    action: str  # "tool" | "finish"
+    tool_name: str | None = None
+    tool_args: dict[str, Any] = field(default_factory=dict)
+    rationale: str = ""
+    confidence: float = 1.0
+    raw_response: str = ""
+
+
+def build_clinical_tool_selection_prompt(
+    case_id: int,
+    event_id: str,
+    risk_level: str,
+    affected_vitals: list[str],
+    executed_tools: list[str],
+    state_summary: dict[str, Any],
+    iteration: int,
+    max_iterations: int,
+) -> str:
+    """Build prompt providing clinical event context and history for LLM tool selection."""
+    executed_desc = ", ".join(executed_tools) if executed_tools else "None"
+
+    return f"""CLINICAL REASONING AGENT CYCLE (Iteration {iteration + 1} of max {max_iterations}):
+Patient / Case ID: {case_id}
+Target Event ID: {event_id}
+Risk Assessment: {risk_level}
+Affected Vitals: {affected_vitals}
+
+Current Clinical State Summary:
+- Tools Already Executed: {executed_desc}
+- Patient Episodic Memory Retrieved: {state_summary.get('patient_context_retrieved', False)}
+- Patient Prior Assessments: {state_summary.get('prior_assessments_count', 0)}
+- Medical Query Formulated: {state_summary.get('medical_query_built', False)}
+- Current Medical Query: {json.dumps(state_summary.get('current_query', ''))}
+- Medical Literature Retrieved: {state_summary.get('evidence_retrieved', False)}
+- Retrieved Passages Count: {state_summary.get('retrieved_passages_count', 0)}
+- Clinical Evidence Evaluated: {state_summary.get('evidence_evaluated', False)}
+- Deterministic Evaluation Baseline Available: {state_summary.get('has_deterministic_baseline', False)}
+- Vitals and Patterns Glance: {json.dumps(state_summary.get('findings_glance', []))}
+
+TASK:
+Determine what clinical tool should be executed next to gather needed patient context, medical literature, or synthesis,
+OR choose "finish" if sufficient clinical evidence has been gathered to complete the report.
+Respond strictly in the specified JSON format.
+"""
+
 
 __all__ = [
+    "CLINICAL_TOOL_SYSTEM_INSTRUCTION",
+    "ClinicalReasoningToolDecision",
     "GeminiClinicalReasoner",
     "LLMReasonerError",
     "LLMSchemaValidationError",
     "LLMTimeoutError",
     "LLMUnavailableError",
+    "build_clinical_tool_selection_prompt",
     "sanitize_single_recommendation",
     "sanitize_clinical_recommendations",
     "_validate_claim_grounding",

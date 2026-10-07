@@ -53,6 +53,9 @@ class DataAnalysisAgent:
         data_loader: Callable[[int], pd.DataFrame] | None = None,
         name: str = "DataAnalysisAgent",
         verbose: bool = False,
+        enable_llm: bool = False,
+        llm_reasoner: Any | None = None,
+        max_tool_iterations: int = 5,
     ):
         self.name = name
         self.event_queue = event_queue
@@ -60,6 +63,12 @@ class DataAnalysisAgent:
         self.patient_states: dict[int, PatientAnalysisState] = {}
         self.verbose = bool(verbose)
         self.is_healthy: bool = True
+        self.enable_llm = enable_llm
+        self.llm_reasoner = llm_reasoner
+        self.max_tool_iterations = max_tool_iterations
+        # Standardized agent tools registry
+        from carematrix_runtime.tools.data_analysis_tools import create_data_analysis_tools
+        self.tools = create_data_analysis_tools()
         self._worker_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._is_running: bool = False
@@ -80,6 +89,217 @@ class DataAnalysisAgent:
             self.event_queue.publish("heartbeats", hb)
         return hb
 
+    def _run_deterministic_analysis(
+        self,
+        window: pd.DataFrame,
+        risk_event: RiskDecisionEvent,
+    ) -> tuple[bool, dict[str, Any], dict[str, Any], list[str], list[str], list[str]]:
+        """Execute the standard deterministic analytical pipeline using registered tools."""
+        quality_tool = self.tools.get("assess_window_quality")
+        metrics_tool = self.tools.get("extract_metrics_and_patterns")
+        requested_checks = getattr(risk_event, "requested_checks", None)
+
+        quality_flag, quality = (
+            quality_tool(window=window)
+            if quality_tool
+            else assess_window_quality(window)
+        )
+        metrics, patterns, changes, executed_checks = (
+            metrics_tool(window=window, risk=risk_event, requested_checks=requested_checks)
+            if metrics_tool
+            else extract_metrics_and_patterns(window=window, risk=risk_event, requested_checks=requested_checks)
+        )
+        return quality_flag, quality, metrics, patterns, changes, executed_checks
+
+    def _run_agentic_tool_loop(
+        self,
+        window: pd.DataFrame,
+        risk_event: RiskDecisionEvent,
+        case_id: int,
+    ) -> tuple[bool, dict[str, Any], dict[str, Any], list[str], list[str], list[str], list[dict[str, Any]]]:
+        """Execute genuine bounded LLM tool-selection loop for Data Analysis.
+
+        Gemini inspects the risk event and observation window and decides which tool to run next
+        (assess_window_quality, extract_metrics_and_patterns, calculate_trend, verify_cross_agent_consistency, or finish).
+        Iteratively runs selected tools, feeds results back to Gemini, and safely finishes.
+        """
+        if self.llm_reasoner is None:
+            from data_analysis_agent.data_analysis_llm_reasoner import GeminiDataAnalysisReasoner
+            self.llm_reasoner = GeminiDataAnalysisReasoner()
+
+        executed_tools: list[str] = []
+        tool_trace: list[dict[str, Any]] = []
+
+        quality_flag: bool | None = None
+        quality: dict[str, Any] | None = None
+        metrics: dict[str, Any] = {}
+        patterns: list[str] = []
+        changes: list[str] = []
+        executed_checks: list[str] = ["agentic_analysis"]
+        individual_trends: dict[str, Any] = {}
+
+        event_id = str(getattr(risk_event, "event_id", "unknown_risk_event"))
+        risk_level = str(getattr(risk_event, "risk_level", "INDETERMINATE"))
+        affected = list(getattr(risk_event, "affected_vitals", []))
+
+        window_summary = {
+            "sample_count": len(window),
+            "duration_seconds": float(window["Time"].iloc[-1] - window["Time"].iloc[0]) if len(window) > 1 and "Time" in window.columns else 0.0,
+            "vitals": [col for col in VITAL_COLUMNS if col in window.columns],
+        }
+
+        for iteration in range(self.max_tool_iterations):
+            state_summary = {
+                "quality_assessed": quality is not None,
+                "quality_flagged": quality_flag,
+                "metrics_extracted": bool(metrics),
+                "consistency_verified": "verify_cross_agent_consistency" in executed_tools,
+                "patterns_glance": patterns[:5] if patterns else [],
+                "trends_glance": {v: m.get("trend") for v, m in metrics.items()} if metrics else {v: t[1] for v, t in individual_trends.items()},
+            }
+
+            # Gemini selects next analytical tool or decides to finish
+            decision = self.llm_reasoner.select_tool(
+                case_id=case_id,
+                event_id=event_id,
+                risk_level=risk_level,
+                affected_vitals=affected,
+                window_summary=window_summary,
+                executed_tools=executed_tools,
+                state_summary=state_summary,
+                iteration=iteration,
+                max_iterations=self.max_tool_iterations,
+            )
+
+            step_record: dict[str, Any] = {
+                "iteration": iteration + 1,
+                "thought": decision.thought,
+                "action": decision.action,
+                "tool_name": decision.tool_name,
+                "tool_args": decision.tool_args,
+                "confidence": decision.confidence,
+            }
+
+            if decision.action == "finish":
+                step_record["status"] = "finished"
+                step_record["rationale"] = decision.rationale
+                tool_trace.append(step_record)
+                break
+
+            tool_name = (decision.tool_name or "").strip()
+            if not tool_name or tool_name not in self.tools:
+                step_record["status"] = "error"
+                step_record["error"] = f"Unknown tool: '{tool_name}'"
+                tool_trace.append(step_record)
+                break
+
+            # Execute selected tool
+            try:
+                if tool_name == "assess_window_quality":
+                    exp = decision.tool_args.get("expected_samples") if isinstance(decision.tool_args, dict) else None
+                    q_tool = self.tools[tool_name]
+                    quality_flag, quality = q_tool(window=window, expected_samples=exp)
+                    step_record["status"] = "success"
+                    step_record["output"] = {
+                        "quality_flagged": quality_flag,
+                        "samples": quality.get("samples"),
+                        "insufficient_samples": quality.get("insufficient_samples"),
+                    }
+                    executed_tools.append(tool_name)
+
+                elif tool_name == "extract_metrics_and_patterns":
+                    checks = decision.tool_args.get("requested_checks") if isinstance(decision.tool_args, dict) else None
+                    req_checks = checks or getattr(risk_event, "requested_checks", None)
+                    m_tool = self.tools[tool_name]
+                    metrics, patterns, changes, executed_checks = m_tool(
+                        window=window,
+                        risk=risk_event,
+                        requested_checks=req_checks,
+                    )
+                    step_record["status"] = "success"
+                    step_record["output"] = {
+                        "vitals_analyzed": list(metrics.keys()),
+                        "patterns_count": len(patterns),
+                        "changes_count": len(changes),
+                    }
+                    executed_tools.append(tool_name)
+
+                elif tool_name == "calculate_trend":
+                    vital = decision.tool_args.get("vital") if isinstance(decision.tool_args, dict) else None
+                    if not vital and affected:
+                        vital = affected[0]
+                    elif not vital:
+                        vital = "HR"
+                    if vital in window.columns:
+                        tr_tool = self.tools[tool_name]
+                        slope, direction = tr_tool(values=window[vital].dropna())
+                        individual_trends[vital] = (slope, direction)
+                        if vital not in metrics:
+                            metrics[vital] = {"trend": direction, "slope_per_sample": slope}
+                        else:
+                            metrics[vital]["trend"] = direction
+                            metrics[vital]["slope_per_sample"] = slope
+                        step_record["status"] = "success"
+                        step_record["output"] = {"vital": vital, "slope": slope, "trend": direction}
+                        executed_tools.append(tool_name)
+                    else:
+                        step_record["status"] = "error"
+                        step_record["error"] = f"Vital '{vital}' not found in observation window"
+                        tool_trace.append(step_record)
+                        break
+
+                elif tool_name == "verify_cross_agent_consistency":
+                    # Run cross-agent verification tool
+                    c_tool = self.tools[tool_name]
+                    q_fl = quality_flag if quality_flag is not None else False
+                    stat = "partial_analysis" if (quality and quality.get("insufficient_samples")) or not metrics else "complete"
+                    cons_res = c_tool(
+                        risk_level=risk_level,
+                        metrics=metrics,
+                        patterns=patterns,
+                        data_quality_flag=q_fl,
+                        analysis_status=stat,
+                    )
+                    step_record["status"] = "success"
+                    step_record["output"] = {
+                        "consistency": cons_res[0],
+                        "conflict_flags": cons_res[3],
+                        "verification_required": cons_res[4],
+                    }
+                    executed_tools.append(tool_name)
+
+                else:
+                    step_record["status"] = "success"
+                    step_record["output"] = "Tool executed successfully"
+                    executed_tools.append(tool_name)
+
+            except Exception as err:
+                step_record["status"] = "error"
+                step_record["error"] = str(err)
+                tool_trace.append(step_record)
+                break
+
+            tool_trace.append(step_record)
+
+        # Fallback completion: Ensure quality and metrics are populated deterministically if not executed
+        if quality_flag is None or quality is None:
+            quality_tool = self.tools.get("assess_window_quality")
+            quality_flag, quality = (
+                quality_tool(window=window)
+                if quality_tool
+                else assess_window_quality(window)
+            )
+
+        if not metrics:
+            metrics_tool = self.tools.get("extract_metrics_and_patterns")
+            metrics, patterns, changes, executed_checks = (
+                metrics_tool(window=window, risk=risk_event, requested_checks=getattr(risk_event, "requested_checks", None))
+                if metrics_tool
+                else extract_metrics_and_patterns(window=window, risk=risk_event, requested_checks=getattr(risk_event, "requested_checks", None))
+            )
+
+        return quality_flag, quality, metrics, patterns, changes, executed_checks, tool_trace
+
     # ------------------------------------------------------------------------
     # Autonomous Event Processing Cycle
     # ------------------------------------------------------------------------
@@ -99,6 +319,10 @@ class DataAnalysisAgent:
             if hasattr(risk_event, "metadata") and isinstance(risk_event.metadata, dict)
             else 0.0
         )
+
+        tool_trace: list[dict[str, Any]] = []
+        agentic_mode = "DETERMINISTIC"
+        fallback_err = None
 
         try:
             # 1. RECEIVE & VALIDATE
@@ -121,17 +345,44 @@ class DataAnalysisAgent:
             if window.empty:
                 raise ValueError(f"No samples available in analysis window {start}–{end}.")
 
-            # 3. REASON: QUALITY ASSESSMENT & PATTERN EXTRACTION (ADAPTIVE)
-            requested_checks = getattr(risk_event, "requested_checks", None)
-            quality_flag, quality = assess_window_quality(window)
-            metrics, patterns, changes, executed_checks = extract_metrics_and_patterns(
-                window=window,
-                risk=risk_event,
-                requested_checks=requested_checks,
-            )
+            # 3. REASON: LLM-DRIVEN BOUNDED AGENTIC TOOL SELECTION OR DETERMINISTIC ANALYSIS
+            if self.enable_llm:
+                try:
+                    (
+                        quality_flag,
+                        quality,
+                        metrics,
+                        patterns,
+                        changes,
+                        executed_checks,
+                        tool_trace,
+                    ) = self._run_agentic_tool_loop(
+                        window=window,
+                        risk_event=risk_event,
+                        case_id=case_id,
+                    )
+                    agentic_mode = "LLM_AGENTIC_TOOLS"
+                except Exception as exc:
+                    fallback_err = str(exc)
+                    agentic_mode = "LLM_FALLBACK_DETERMINISTIC"
+                    if self.verbose:
+                        print(_format_log(self.name, "LLM_LOOP_FALLBACK", f"Tool loop failed: {exc}. Executing deterministic fallback."))
+                    quality_flag, quality, metrics, patterns, changes, executed_checks = self._run_deterministic_analysis(
+                        window=window,
+                        risk_event=risk_event,
+                    )
+            else:
+                quality_flag, quality, metrics, patterns, changes, executed_checks = self._run_deterministic_analysis(
+                    window=window,
+                    risk_event=risk_event,
+                )
+
+            state.latest_tool_trace = tool_trace
+            state.last_agentic_mode = agentic_mode
+
             if self.verbose:
                 tier = getattr(risk_event, "analysis_level", "DETAILED")
-                print(_format_log(self.name, "ANALYZE", f"Tier: {tier} | Vitals: {len(metrics)} | Quality: {'COMPROMISED' if quality_flag else 'NOMINAL'}"))
+                print(_format_log(self.name, "ANALYZE", f"Mode: {agentic_mode} | Tier: {tier} | Vitals: {len(metrics)} | Quality: {'COMPROMISED' if quality_flag else 'NOMINAL'}"))
 
             # 4. CONTEXT: COMPARE WITH PATIENT HISTORICAL STATE
             current_trends = {v: m["trend"] for v, m in metrics.items()}
@@ -191,6 +442,9 @@ class DataAnalysisAgent:
                         "challenge_reason": f"Observed trends conflict with risk assessment {risk_level}: {conflict_flags}",
                         "target_agent": "RiskAgent",
                         "target_event_id": event_id,
+                        **({"tool_trace": tool_trace} if tool_trace else {}),
+                        "agentic_mode": agentic_mode,
+                        **({"fallback_error": fallback_err} if fallback_err else {}),
                     },
                     performative=PerformativeType.CHALLENGE.value,
                     challenge_round=current_round + 1,
@@ -272,6 +526,9 @@ class DataAnalysisAgent:
                     "conflicting_evidence": conflicting,
                     "supporting_evidence": supporting,
                     **({"negotiation_trace": negotiation_trace} if negotiation_trace else {}),
+                    **({"tool_trace": tool_trace} if tool_trace else {}),
+                    "agentic_mode": agentic_mode,
+                    **({"fallback_error": fallback_err} if fallback_err else {}),
                 },
                 performative=PerformativeType.INFORM.value,
                 challenge_round=current_round,
