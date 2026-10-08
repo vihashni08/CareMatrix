@@ -14,10 +14,8 @@ window.CommandCenterView = function() {
   const state = window.useCareMatrixState();
   const dispatch = window.useCareMatrixDispatch();
 
-  const { system, patients, activeAlerts, patientDetails, selectedPatientId } = state;
+  const { system, patients, activeAlerts } = state;
   const patientList = Object.values(patients);
-  const selectedDetail = patientDetails[selectedPatientId] || {};
-  const currentPipeline = selectedDetail.pipelineState || {};
 
   const handleSelectBed = (patientId) => {
     dispatch({ type: 'SET_SELECTED_PATIENT_ID', payload: patientId });
@@ -160,10 +158,18 @@ window.CommandCenterView = function() {
           {patientList.map(p => {
             const hasAlert = p.has_active_alert || p.status === 'ALERT';
             const isSurveillance = p.status === 'SURVEILLANCE';
-            const hr = Math.round(p.latest_vitals?.hr || p.latest_vitals?.HR || 0);
-            const map = Math.round(p.latest_vitals?.map || p.latest_vitals?.MAP || 0);
-            const spo2 = Math.round(p.latest_vitals?.spo2 || p.latest_vitals?.SpO2 || 0);
-            const rr = Math.round(p.latest_vitals?.rr || p.latest_vitals?.RR || 0);
+            const safeNumeric = (value) => {
+              const n = Number(value);
+              return Number.isFinite(n) ? n : null;
+            };
+            const hrValue = safeNumeric(p.latest_vitals?.hr ?? p.latest_vitals?.HR);
+            const mapValue = safeNumeric(p.latest_vitals?.map ?? p.latest_vitals?.MAP);
+            const spo2Value = safeNumeric(p.latest_vitals?.spo2 ?? p.latest_vitals?.SpO2);
+            const rrValue = safeNumeric(p.latest_vitals?.rr ?? p.latest_vitals?.RR);
+            const hr = hrValue !== null ? Math.round(hrValue) : null;
+            const map = mapValue !== null ? Math.round(mapValue) : null;
+            const spo2 = spo2Value !== null ? Math.round(spo2Value) : null;
+            const rr = rrValue !== null ? Math.round(rrValue) : null;
             const riskLevel = p.risk_level || 'LOW RISK';
             const isHighRisk = riskLevel.includes('HIGH');
 
@@ -379,146 +385,7 @@ window.CommandCenterView = function() {
       </section>
 
       {/* ===================================================================== */}
-      {/* 5. MULTI-AGENT PIPELINE ARCHITECTURE (DERIVED STATE)                  */}
-      {/* ===================================================================== */}
-      <section className="bg-medCard border border-medBorder rounded-2xl p-5 shadow-xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-medBorder pb-3 gap-2">
-          <div>
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              System Pipeline Architecture Flow
-              <span className="text-xs font-mono font-normal text-sky-400 px-2 py-0.5 rounded bg-sky-950 border border-sky-800">
-                Bed {selectedPatientId} Focus
-              </span>
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Live stage execution states derived from actual EventQueue publications and dynamic agentic tool calls.
-            </p>
-          </div>
-          <span className="text-xs font-mono text-slate-400">
-            Observation → Monitoring → Risk ↔ Data Analysis → Clinical Reasoning → Care Coordination
-          </span>
-        </div>
-
-        {/* Dynamic Multi-Agent Flow Diagram */}
-        <div className="grid grid-cols-1 md:grid-cols-6 gap-3 text-xs">
-          {/* Node 1: Observation */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] font-bold font-mono text-sky-400">1. INTAKE</span>
-                <span className="text-[10px] font-mono text-emerald-400 font-bold">
-                  {currentPipeline.observation || 'ACTIVE'}
-                </span>
-              </div>
-              <div className="font-bold text-white">Observation</div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Vital telemetry intake (1.0s stream sampling)
-              </p>
-            </div>
-            <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-1 mt-2">
-              Sensor Stream
-            </div>
-          </div>
-
-          {/* Node 2: Monitoring */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] font-bold font-mono text-sky-400">2. MONITOR</span>
-                <span className="text-[10px] font-mono text-sky-300 font-bold">
-                  {currentPipeline.monitoring || 'IDLE'}
-                </span>
-              </div>
-              <div className="font-bold text-white">Monitoring Agent</div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Dynamic tool calling for deviation & signal quality
-              </p>
-            </div>
-            <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-1 mt-2 flex justify-between">
-              <span>Tools: Preprocess, Baseline, Trend</span>
-            </div>
-          </div>
-
-          {/* Node 3: Risk */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] font-bold font-mono text-indigo-400">3. RISK</span>
-                <span className="text-[10px] font-mono text-emerald-400 font-bold">
-                  {currentPipeline.risk || 'IDLE'}
-                </span>
-              </div>
-              <div className="font-bold text-white">Risk Agent</div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Trained ML random forest inference
-              </p>
-            </div>
-            <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-1 mt-2">
-              Model: {selectedDetail.risk?.model_name || 'RandomForest'}
-            </div>
-          </div>
-
-          {/* Node 4: Data Analysis */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] font-bold font-mono text-purple-400">4. ANALYSIS</span>
-                <span className="text-[10px] font-mono text-purple-300 font-bold">
-                  {currentPipeline.dataAnalysis || 'IDLE'}
-                </span>
-              </div>
-              <div className="font-bold text-white">Data Analysis</div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Challenge/negotiation verification loop
-              </p>
-            </div>
-            <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-1 mt-2">
-              Cross-Agent Challenge
-            </div>
-          </div>
-
-          {/* Node 5: Clinical Reasoning */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] font-bold font-mono text-pink-400">5. REASON</span>
-                <span className="text-[10px] font-mono text-pink-300 font-bold">
-                  {currentPipeline.clinicalReasoning || 'IDLE'}
-                </span>
-              </div>
-              <div className="font-bold text-white">Clinical Reasoning</div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                PubMed RAG retrieval & evidence grounding
-              </p>
-            </div>
-            <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-1 mt-2">
-              Deterministic Safety Arb.
-            </div>
-          </div>
-
-          {/* Node 6: Care Coordination */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] font-bold font-mono text-emerald-400">6. ACTION</span>
-                <span className="text-[10px] font-mono text-emerald-400 font-bold">
-                  {currentPipeline.careCoordination || 'IDLE'}
-                </span>
-              </div>
-              <div className="font-bold text-white">Care Coordination</div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Bedside care orders & escalation dispatch
-              </p>
-            </div>
-            <div className="text-[10px] text-slate-500 border-t border-slate-800 pt-1 mt-2">
-              Action Plan Dispatch
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ===================================================================== */}
-      {/* 6. RUNTIME ADAPTIVE EXECUTION METRICS                                  */}
+      {/* 5. RUNTIME ADAPTIVE EXECUTION METRICS                                  */}
       {/* ===================================================================== */}
       <section className="bg-medCard border border-medBorder rounded-2xl p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between border-b border-medBorder pb-3">

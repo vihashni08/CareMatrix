@@ -168,7 +168,7 @@ class TestFrontendArchitecture(unittest.TestCase):
         self.assertIn("Inpatient Telemetry Census", cc_code)
         self.assertIn("Real-Time Clinical Alert Feed", cc_code)
         self.assertIn("5-Agent Autonomous System Health Matrix", cc_code)
-        self.assertIn("System Pipeline Architecture Flow", cc_code)
+        self.assertNotIn("System Pipeline Architecture Flow", cc_code)
         self.assertIn("Adaptive Execution & Surveillance Metrics", cc_code)
 
         with open(ai_path, "r", encoding="utf-8") as f:

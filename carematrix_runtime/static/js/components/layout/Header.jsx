@@ -88,6 +88,10 @@ window.BedSelectorStrip = function() {
   const dispatch = window.useCareMatrixDispatch();
   const patientList = Object.values(state.patients);
   const selectedPid = state.selectedPatientId;
+  const safeNumeric = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
 
   return (
     <section className="bg-slate-950 border-b border-slate-800 px-6 py-2 flex items-center space-x-2.5 overflow-x-auto text-xs" aria-label="Bed Selection Strip">
@@ -96,8 +100,10 @@ window.BedSelectorStrip = function() {
         const isSelected = p.patient_id === selectedPid;
         const hasAlert = p.has_active_alert || p.status === 'ALERT';
         const isSurveillance = p.status === 'SURVEILLANCE';
-        const hr = Math.round(p.latest_vitals?.hr || p.latest_vitals?.HR || 0);
-        const map = Math.round(p.latest_vitals?.map || p.latest_vitals?.MAP || 0);
+        const hrValue = safeNumeric(p.latest_vitals?.hr ?? p.latest_vitals?.HR);
+        const mapValue = safeNumeric(p.latest_vitals?.map ?? p.latest_vitals?.MAP);
+        const hr = hrValue !== null ? Math.round(hrValue) : null;
+        const map = mapValue !== null ? Math.round(mapValue) : null;
 
         return (
           <button

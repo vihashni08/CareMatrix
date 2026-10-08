@@ -16,6 +16,17 @@ from monitoring_agent.data_loader import VITAL_COLUMNS, load_case_data, syntheti
 class PatientStreamReplayer:
     """Progressive vital signs stream generator for continuous patient monitoring replay."""
 
+    @staticmethod
+    def _clean_numeric(value: Any) -> float | None:
+        """Return a finite float or None instead of NaN/invalid values."""
+        if value is None:
+            return None
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        return float(num) if pd.notna(num) else None
+
     def __init__(
         self,
         case_id: int | str | None = None,
@@ -85,13 +96,13 @@ class PatientStreamReplayer:
                     return
                 sample = {
                     "timestamp": float(idx) if isinstance(idx, (int, float, np.number)) else float(count),
-                    "HR": float(row.get("HR", np.nan)),
-                    "MAP": float(row.get("MAP", np.nan)),
-                    "SpO2": float(row.get("SpO2", np.nan)),
-                    "RR": float(row.get("RR", np.nan)),
-                    "SBP": float(row.get("SBP", np.nan)),
-                    "DBP": float(row.get("DBP", np.nan)),
-                    "BT": float(row.get("BT", np.nan)),
+                    "HR": self._clean_numeric(row.get("HR", np.nan)),
+                    "MAP": self._clean_numeric(row.get("MAP", np.nan)),
+                    "SpO2": self._clean_numeric(row.get("SpO2", np.nan)),
+                    "RR": self._clean_numeric(row.get("RR", np.nan)),
+                    "SBP": self._clean_numeric(row.get("SBP", np.nan)),
+                    "DBP": self._clean_numeric(row.get("DBP", np.nan)),
+                    "BT": self._clean_numeric(row.get("BT", np.nan)),
                 }
                 if self.case_id is not None:
                     sample["patient_id"] = self.case_id

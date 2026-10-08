@@ -109,10 +109,14 @@ window.PatientVitalsSection = function({ vitals, vitalsHistory, dataAnalysis }) 
     }
   }, [vitalsHistory]);
 
-  const hr = vitals?.hr || vitals?.HR || 0;
-  const map = vitals?.map || vitals?.MAP || 0;
-  const spo2 = vitals?.spo2 || vitals?.SpO2 || 0;
-  const rr = vitals?.rr || vitals?.RR || 0;
+  const safeNumeric = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const hr = safeNumeric(vitals?.hr ?? vitals?.HR);
+  const map = safeNumeric(vitals?.map ?? vitals?.MAP);
+  const spo2 = safeNumeric(vitals?.spo2 ?? vitals?.SpO2);
+  const rr = safeNumeric(vitals?.rr ?? vitals?.RR);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
@@ -129,7 +133,7 @@ window.PatientVitalsSection = function({ vitals, vitalsHistory, dataAnalysis }) 
             <span className="text-[10px] font-mono text-slate-500">60-100 BPM</span>
           </div>
           <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
-            <span>{Math.round(hr)}</span>
+            <span>{hr !== null ? Math.round(hr) : '—'}</span>
             <span className="text-xs font-normal text-slate-400">bpm</span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">
@@ -151,7 +155,7 @@ window.PatientVitalsSection = function({ vitals, vitalsHistory, dataAnalysis }) 
             <span className="text-[10px] font-mono text-slate-500">70-105 mmHg</span>
           </div>
           <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
-            <span>{Math.round(map)}</span>
+            <span>{map !== null ? Math.round(map) : '—'}</span>
             <span className="text-xs font-normal text-slate-400">mmHg</span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">
@@ -173,7 +177,7 @@ window.PatientVitalsSection = function({ vitals, vitalsHistory, dataAnalysis }) 
             <span className="text-[10px] font-mono text-slate-500">&gt;=95%</span>
           </div>
           <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
-            <span>{Math.round(spo2)}%</span>
+            <span>{spo2 !== null ? `${Math.round(spo2)}%` : '—'}</span>
             <span className="text-xs font-normal text-slate-400">SpO2</span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">
@@ -195,7 +199,7 @@ window.PatientVitalsSection = function({ vitals, vitalsHistory, dataAnalysis }) 
             <span className="text-[10px] font-mono text-slate-500">12-20 /min</span>
           </div>
           <div className="text-3xl font-black mt-1 font-mono tracking-tight flex items-baseline justify-between">
-            <span>{Math.round(rr)}</span>
+            <span>{rr !== null ? Math.round(rr) : '—'}</span>
             <span className="text-xs font-normal text-slate-400">/min</span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 flex items-center justify-between border-t border-slate-800/80 pt-1.5">

@@ -118,9 +118,13 @@ window.CareMatrixEventUtils = {
 
     if (eventType === 'vital_tick') {
       actionOrTool = 'TELEMETRY_SAMPLE';
-      const hr = Math.round(data.hr || data.HR || 0);
-      const map = Math.round(data.map || data.MAP || 0);
-      summaryText = `HR: ${hr} bpm | MAP: ${map} mmHg`;
+      const safeNumeric = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+      };
+      const hr = safeNumeric(data.hr ?? data.HR);
+      const map = safeNumeric(data.map ?? data.MAP);
+      summaryText = `HR: ${hr !== null ? Math.round(hr) : '—'} bpm | MAP: ${map !== null ? Math.round(map) : '—'} mmHg`;
     } else if (eventType === 'monitoring_alert') {
       actionOrTool = data.event_type || 'ALERT';
       const vitals = Array.isArray(data.affected_vitals) ? data.affected_vitals.join(', ') : 'vitals';

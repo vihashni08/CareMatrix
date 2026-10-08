@@ -268,10 +268,10 @@ window.AgentInspectionView = function() {
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="font-bold uppercase tracking-wider">
-              Select Agent Pipeline Stage to Inspect:
+              Agent Pipeline
             </span>
             <span className="font-mono text-[11px] text-slate-500">
-              Active Focus: <b className="text-sky-400">{currentAgentMeta.name}</b>
+              Active: <b className="text-sky-400">{currentAgentMeta.name}</b>
             </span>
           </div>
 
@@ -336,76 +336,43 @@ window.AgentInspectionView = function() {
           </div>
         </div>
 
-        {/* 3. Visual 5-Stage Pipeline Flow Tracker */}
+        {/* 3. Compact Pipeline Summary */}
         <div className="bg-slate-900/90 rounded-xl p-3 border border-slate-800">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <span>Event-Driven Multi-Agent Pipeline Topology</span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Pipeline
             </span>
             <span className="text-[10px] font-mono text-slate-500">
-              Strict Asynchronous EventQueue Communication
+              5-stage flow
             </span>
           </div>
 
-          <div className="flex flex-wrap lg:flex-nowrap items-center gap-1.5 text-[11px] font-mono">
-            <div className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-300 flex items-center gap-1">
-              <span>Telemetry Ingestion</span>
-            </div>
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono">
+            {[
+              { key: 'MonitoringAgent', label: 'Monitoring', tone: 'sky' },
+              { key: 'RiskAgent', label: 'Risk', tone: 'indigo' },
+              { key: 'DataAnalysisAgent', label: 'Analysis', tone: 'purple' },
+              { key: 'ClinicalReasoningAgent', label: 'Reasoning', tone: 'amber' },
+              { key: 'CareCoordinationAgent', label: 'Coordination', tone: 'emerald' }
+            ].map((stage, idx) => {
+              const isSelected = selectedAgent === stage.key;
+              const toneClasses = {
+                sky: 'bg-sky-950 text-sky-200 border-sky-700',
+                indigo: 'bg-indigo-950 text-indigo-200 border-indigo-700',
+                purple: 'bg-purple-950 text-purple-200 border-purple-700',
+                amber: 'bg-amber-950 text-amber-200 border-amber-700',
+                emerald: 'bg-emerald-950 text-emerald-200 border-emerald-700'
+              };
 
-            <span className="text-slate-600 font-bold">➔</span>
-
-            <div className={`px-2.5 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${
-              selectedAgent === 'MonitoringAgent'
-                ? 'bg-sky-950 text-sky-200 border-sky-500 shadow-md shadow-sky-500/20 font-bold'
-                : 'bg-slate-800/40 text-slate-400 border-slate-800'
-            }`}>
-              <span>1. Monitoring</span>
-              <span className="text-[9px] px-1 rounded bg-sky-900/80 text-sky-300">Tool Loop</span>
-            </div>
-
-            <span className="text-slate-600 font-bold">➔</span>
-
-            <div className={`px-2.5 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${
-              selectedAgent === 'RiskAgent'
-                ? 'bg-indigo-950 text-indigo-200 border-indigo-500 shadow-md shadow-indigo-500/20 font-bold'
-                : 'bg-slate-800/40 text-slate-400 border-slate-800'
-            }`}>
-              <span>2. Risk ML</span>
-              <span className="text-[9px] px-1 rounded bg-indigo-900/80 text-indigo-300">Classifier</span>
-            </div>
-
-            <span className="text-purple-400 font-bold">⇄</span>
-
-            <div className={`px-2.5 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${
-              selectedAgent === 'DataAnalysisAgent'
-                ? 'bg-purple-950 text-purple-200 border-purple-500 shadow-md shadow-purple-500/20 font-bold'
-                : 'bg-slate-800/40 text-slate-400 border-slate-800'
-            }`}>
-              <span>3. Data Analysis</span>
-              <span className="text-[9px] px-1 rounded bg-purple-900/80 text-purple-300">FIPA Dialogue</span>
-            </div>
-
-            <span className="text-slate-600 font-bold">➔</span>
-
-            <div className={`px-2.5 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${
-              selectedAgent === 'ClinicalReasoningAgent'
-                ? 'bg-amber-950 text-amber-200 border-amber-500 shadow-md shadow-amber-500/20 font-bold'
-                : 'bg-slate-800/40 text-slate-400 border-slate-800'
-            }`}>
-              <span>4. Clinical Reasoning</span>
-              <span className="text-[9px] px-1 rounded bg-amber-900/80 text-amber-300">PubMed RAG</span>
-            </div>
-
-            <span className="text-slate-600 font-bold">➔</span>
-
-            <div className={`px-2.5 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${
-              selectedAgent === 'CareCoordinationAgent'
-                ? 'bg-emerald-950 text-emerald-200 border-emerald-500 shadow-md shadow-emerald-500/20 font-bold'
-                : 'bg-slate-800/40 text-slate-400 border-slate-800'
-            }`}>
-              <span>5. Care Coordination</span>
-              <span className="text-[9px] px-1 rounded bg-emerald-900/80 text-emerald-300">Orders CDS</span>
-            </div>
+              return (
+                <React.Fragment key={stage.key}>
+                  <div className={`px-2.5 py-1.5 rounded-lg border ${isSelected ? toneClasses[stage.tone] : 'bg-slate-800/40 text-slate-400 border-slate-800'}`}>
+                    {idx + 1}. {stage.label}
+                  </div>
+                  {idx < 4 && <span className="text-slate-600 font-bold">→</span>}
+                </React.Fragment>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -425,7 +392,7 @@ window.AgentInspectionView = function() {
                 {currentAgentMeta.paradigm}
               </span>
             </div>
-            <p className="text-xs text-slate-300 mt-1 max-w-3xl leading-relaxed">
+            <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
               {currentAgentMeta.roleDescription}
             </p>
           </div>
@@ -458,44 +425,27 @@ window.AgentInspectionView = function() {
           </div>
         </div>
 
-        {/* Truthful Execution Context Bar */}
+        {/* Compact Execution Status */}
         <div className="flex flex-wrap items-center justify-between gap-3 text-xs bg-slate-900/60 p-3 rounded-xl border border-slate-800">
           <div className="flex items-center gap-2">
             <span className="text-slate-400 font-bold uppercase tracking-wider text-[11px]">
-              Execution Inspection Context:
+              Execution:
             </span>
-            <div className="inline-flex rounded-lg bg-slate-950 p-1 border border-slate-800">
-              <button
-                onClick={() => setSelectedHistoryIndex(null)}
-                className={`px-3 py-1 rounded text-xs font-mono font-bold transition-all ${
-                  selectedHistoryIndex === null
-                    ? 'bg-sky-600 text-white shadow-md shadow-sky-600/30'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Latest Evaluated Execution
-              </button>
-              {sessionEvents.length > 1 && sessionEvents.slice(1, 4).map((ev, idx) => (
-                <button
-                  key={idx + 1}
-                  onClick={() => setSelectedHistoryIndex(idx + 1)}
-                  className={`px-2.5 py-1 rounded text-xs font-mono transition-all ${
-                    selectedHistoryIndex === idx + 1
-                      ? 'bg-sky-600 text-white shadow-md shadow-sky-600/30'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Live Session Event #{sessionEvents.length - (idx + 1)}
-                </button>
-              ))}
-            </div>
+            <button
+              onClick={() => setSelectedHistoryIndex(null)}
+              className={`px-2.5 py-1 rounded text-[11px] font-mono transition-all ${
+                selectedHistoryIndex === null ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white bg-slate-950'
+              }`}
+            >
+              Latest
+            </button>
           </div>
 
           <div className="text-[11px] text-slate-400 font-mono">
             {selectedHistoryIndex === null ? (
-              <span className="text-emerald-400">● Live SSE Synced Evaluation</span>
+              <span className="text-emerald-400">● Live</span>
             ) : (
-              <span className="text-amber-400">◷ In-Memory Session Event #{sessionEvents.length - selectedHistoryIndex}</span>
+              <span className="text-amber-400">◷ Event {sessionEvents.length - selectedHistoryIndex}</span>
             )}
           </div>
         </div>
